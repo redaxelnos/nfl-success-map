@@ -5,15 +5,14 @@ from streamlit_folium import st_folium
 
 # Page configuration
 st.set_page_config(
-    page_title="Advanced NFL Postseason & Team Analytics Map", layout="wide"
+    page_title="Interactive Clickable NFL Postseason Map", layout="wide"
 )
 
-st.title("Advanced NFL Postseason & Team Intelligence Simulator")
+st.title("Interactive Clickable NFL Postseason & Analytics Simulator")
 st.markdown(
-    "Select any team in the sidebar to inspect its **Advanced Profile** (rankings,"
-    " turnover metrics, SOS), adjust a **Global Injury Risk Factor**, and"
-    " fine-tune individual player injury sliders to see real-time shifts in"
-    " playoff probabilities."
+    "**Click any team's logo on the map** (or use the sidebar dropdown) to"
+    " inspect their advanced profile, adjust global risk, and fine-tune"
+    " individual player injury sliders in real time."
 )
 
 
@@ -417,7 +416,7 @@ df_teams = load_team_data()
 
 # 2. Key Player Roster Names per Team
 @st.cache_data
-def get_star_players():
+def load_star_players():
   return {
       "KC": [
           "Patrick Mahomes (QB)",
@@ -465,39 +464,55 @@ def get_star_players():
   }
 
 
-star_rosters = get_star_players()
+star_rosters = load_star_players()
 
-# 3. Sidebar Controls & Advanced Info Drawer
+# 3. Initialize Session State for Selected Team Synchronization
+if "selected_team" not in st.session_state:
+  st.session_state.selected_team = "Kansas City Chiefs"
+
+team_names = df_teams["team"].tolist()
+current_index = team_names.index(st.session_state.selected_team)
+
+# Sidebar Controls
 st.sidebar.header("Postseason Simulation & Intelligence")
 target_metric = st.sidebar.selectbox(
     "View Map Metric", ["Playoff Probability (%)", "Super Bowl Likelihood (%)"]
 )
 
 st.sidebar.markdown("---")
-selected_team_name = st.sidebar.selectbox(
-    "Select Team to Inspect", df_teams["team"].tolist()
-)
-selected_abbr = df_teams.loc[
-    df_teams["team"] == selected_team_name, "abbr"
-].values[0]
 
-# Extract team row data for the drawer
+
+# Selectbox linked directly to session state
+def update_team_selection():
+  st.session_state.selected_team = st.session_state.team_dropdown
+
+
+selected_team_name = st.sidebar.selectbox(
+    "Select Team to Inspect",
+    team_names,
+    index=current_index,
+    key="team_dropdown",
+    on_change=update_team_selection,
+)
+
+selected_abbr = df_teams.loc[
+    df_teams["team"] == st.session_state.selected_team, "abbr"
+].values[0]
 team_row = df_teams[df_teams["abbr"] == selected_abbr].iloc[0]
 
 # Slide Drawer / Expander for Advanced Team Details
 with st.sidebar.expander(
-    f"Advanced Analytics: {selected_team_name}", expanded=True
+    f"Advanced Analytics: {st.session_state.selected_team}", expanded=True
 ):
   st.markdown(f"**Offensive Rank:** #{team_row['OffRank']}")
   st.markdown(f"**Defensive Rank:** #{team_row['DefRank']}")
   st.markdown(f"**Strength of Schedule (SOS):** {team_row['SOS']}")
   st.markdown(f"**Turnover Margin:** {team_row['TurnoverMargin']:+d}")
 
-# 4. Global Team Injury Risk Factor Slider + Individual Player Sliders
+# Global Team Injury Risk & Individual Player Sliders
 st.sidebar.markdown("---")
 st.sidebar.subheader("Injury Risk Controls")
 
-# Global team-level risk factor
 global_risk_key = f"global_risk_{selected_abbr}"
 if global_risk_key not in st.session_state:
   st.session_state[global_risk_key] = 0
@@ -516,23 +531,19 @@ for p_name in team_players:
   st.sidebar.slider(p_name, 0, 10, key=slider_key)
 
 
-# 5. Calculation Engine linking Global Risk and Player Sliders to Postseason Odds
+# 4. Calculation Engine linking Global Risk and Player Sliders to Postseason Odds
 def calculate_adjusted_odds(row):
   abbr = row["abbr"]
   base_playoff = row["BasePlayoff"]
   base_sb = row["BaseSB"]
 
-  # Sum individual player slider points
   total_injury_points = 0
   team_keys = star_rosters.get(abbr, star_rosters["DEFAULT"])
   for p_name in team_keys:
     key = f"inj_{abbr}_{p_name}"
     total_injury_points += st.session_state.get(key, 0)
 
-  # Include global risk factor penalty
   global_risk = st.session_state.get(f"global_risk_{abbr}", 0)
-
-  # Combined penalty calculation
   combined_penalty = total_injury_points + (global_risk * 1.5)
 
   adjusted_playoff = max(1.0, min(99.0, base_playoff - (combined_penalty * 2.2)))
@@ -546,7 +557,7 @@ def calculate_adjusted_odds(row):
 
 df_teams["displayed_score"] = df_teams.apply(calculate_adjusted_odds, axis=1)
 
-# 6. Build Interactive Map with Logo Icons
+# 5. Build Interactive Map with Clickable Logo Icons
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 
 for _, row in df_teams.iterrows():
@@ -580,7 +591,15 @@ for _, row in df_teams.iterrows():
       location=[row["lat"], row["lon"]],
       icon=logo_icon,
       popup=folium.Popup(popup_text, max_width=300),
-      tooltip=row["team"],
+      tooltip=row["team"],  # Tooltip enables click tracking via streamlit-folium
   ).add_to(m)
 
-st_folium(m, width=1100, height=650)
+# Render map and capture clicks
+map_data = st_folium(m, width=1100, height=650, key="nfl_interactive_map")
+
+# Synchronize map clicks with sidebar state
+if map_data and map_data.get("last_object_clicked"):
+  clicked_team = map_data["last_object_clicked"].get("tooltip")
+  if clicked_team in team_names and clicked_team != st.session_state.selected_team:
+    st.session_state.selected_team = clicked_team
+    st.rerun()
