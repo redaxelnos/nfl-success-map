@@ -580,7 +580,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
   if not official_schedule.empty:
     team_games = official_schedule[
         (official_schedule["home_team"] == selected_abbr)
-        | (official_schedule["away_team"] == selected_abbr]
+        | (official_schedule["away_team"] == selected_abbr)
     ]
     weeks = sorted(team_games["week"].unique().tolist())
 
