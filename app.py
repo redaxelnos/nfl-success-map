@@ -1,21 +1,24 @@
 import math
+import nfl_data_py as nfl
 import folium
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
 # Page configuration
-st.set_page_config(page_title="NFL Weekly Matchup & Travel Hub", layout="wide")
+st.set_page_config(
+    page_title="Official NFL Schedule & Travel Hub", layout="wide"
+)
 
-st.title("NFL Weekly Matchup, Distance Travel & Vitals Hub")
+st.title("Official NFL Schedule, Live Distance Travel & Vitals Hub")
 st.markdown(
     "**Click any team's logo on the map** or use the dropdown to inspect"
-    " team vitals, full 18-week schedules, exact travel distances in miles, and"
-    " weekly win probabilities."
+    " official 18-week schedules, exact travel distances in miles, and"
+    " live-calculated weekly win probabilities."
 )
 
 
-# 1. Complete 32-Team Dataset with Stadium Coordinates & Stats
+# 1. Complete 32-Team Dataset with Coordinates & Metadata
 @st.cache_data
 def load_team_data():
   data = [
@@ -415,18 +418,29 @@ def load_team_data():
 
 
 df_teams = load_team_data()
-
-# Quick lookup dictionary for team coordinates and ratings
-team_dict = df_teams.set_index("team").to_dict("index")
+team_dict = df_teams.set_index("abbr").to_dict("index")
 
 
-# 2. Haversine Formula to Calculate Exact Distance in Miles Between Stadiums
+# 2. Fetch Real Official Schedules via nfl-data-py API
+@st.cache_data
+def load_official_schedules():
+  try:
+    # Pull official regular season schedule for 2026
+    sched_df = nfl.import_schedules([2026])
+    return sched_df[sched_df["game_type"] == "REG"]
+  except Exception:
+    return pd.DataFrame()
+
+
+official_schedule = load_official_schedules()
+
+
+# 3. Haversine Distance Calculator in Miles
 def calculate_travel_distance(lat1, lon1, lat2, lon2):
-  R = 3958.8  # Earth radius in miles
+  R = 3958.8
   phi1, phi2 = math.radians(lat1), math.radians(lat2)
   dphi = math.radians(lat2 - lat1)
   dlambda = math.radians(lon2 - lon1)
-
   a = (
       math.sin(dphi / 2) ** 2
       + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
@@ -434,29 +448,6 @@ def calculate_travel_distance(lat1, lon1, lat2, lon2):
   c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
   return round(R * c, 1)
 
-
-# 3. Comprehensive 4-Week Forward Schedule Generator for All 32 Teams
-@st.cache_data
-def generate_full_schedules():
-  schedules = {}
-  teams = df_teams["team"].tolist()
-  # Systematic rotating sample schedule generator for all 32 teams across Weeks 1-4
-  for i, t in enumerate(teams):
-    opp1 = teams[(i + 1) % len(teams)]
-    opp2 = teams[(i + 5) % len(teams)]
-    opp3 = teams[(i + 10) % len(teams)]
-    opp4 = teams[(i + 15) % len(teams)]
-
-    schedules[t] = [
-        {"Week": 1, "Opponent": opp1, "Location": "Home"},
-        {"Week": 2, "Opponent": opp2, "Location": "Away"},
-        {"Week": 3, "Opponent": opp3, "Location": "Home"},
-        {"Week": 4, "Opponent": opp4, "Location": "Away"},
-    ]
-  return schedules
-
-
-team_schedules = generate_full_schedules()
 
 # 4. State Initialization
 if "selected_team" not in st.session_state:
@@ -474,15 +465,10 @@ if selected_name != st.session_state.selected_team:
   st.session_state.selected_team = selected_name
   st.rerun()
 
-team_row = team_dict[st.session_state.selected_team]
-selected_abbr = [
-    k for k, v in team_dict.items() if v == team_row
-][0]  # wait, abbr is in row['abbr'] but we can get it from df
-# Let's pull team row safely from dataframe:
 team_df_row = df_teams[df_teams["team"] == st.session_state.selected_team].iloc[0]
 selected_abbr = team_df_row["abbr"]
 
-# Display Team Analytics & Ticket Link
+# Display Analytics & Ticket Link
 st.sidebar.markdown(f"### {st.session_state.selected_team} Profile")
 st.sidebar.metric("Offensive Rank", f"#{team_df_row['Off']}")
 st.sidebar.metric("Defensive Rank", f"#{team_df_row['Def']}")
@@ -490,46 +476,28 @@ st.sidebar.metric("Turnover Margin", f"{team_df_row['TO']:+d}")
 st.sidebar.metric("Strength of Schedule", team_df_row["SOS"])
 st.sidebar.link_button("🎟️ Get Tickets", team_df_row["ticket_link"])
 
-# 6. Sliding-Scale Variables with Detailed Explanations
+# 6. Sliding-Scale Simulation Variables
 st.sidebar.markdown("---")
 st.sidebar.subheader("Variable Impact Controls")
 
-st.sidebar.markdown(
-    "**1. Injury Attrition Severity (0-10):**\n"
-    "> *Measures overall depth erosion and missing starters. Directly"
-    " degrades weekly win probabilities and long-term playoff odds.*"
-)
 injury_slider = st.sidebar.slider(
     "Injury Attrition", 0, 10, 0, key=f"inj_{selected_abbr}"
 )
-
-st.sidebar.markdown(
-    "**2. Weather Severity (0-10):**\n"
-    "> *Accounts for severe cold, wind, or rain. Penalizes passing efficiency"
-    " in outdoor matchups.*"
-)
 weather_slider = st.sidebar.slider(
     "Weather Severity", 0, 10, 0, key=f"wea_{selected_abbr}"
-)
-
-st.sidebar.markdown(
-    "**3. Travel Fatigue Multiplier (0-10):**\n"
-    "> *Amplifies the fatigue penalty calculated from exact flight distances"
-    " for away games.*"
 )
 travel_slider = st.sidebar.slider(
     "Travel Fatigue Multiplier", 0, 10, 0, key=f"trv_{selected_abbr}"
 )
 
 
-# 7. Calculation Engine for Playoff Odds
+# 7. Playoff Odds Engine
 def calculate_adjusted_playoff(row):
   base = row["BasePlayoff"]
   abbr = row["abbr"]
   inj = st.session_state.get(f"inj_{abbr}", 0)
   wea = st.session_state.get(f"wea_{abbr}", 0)
   trv = st.session_state.get(f"trv_{abbr}", 0)
-
   total_penalty = (inj * 2.2) + (wea * 1.0) + (trv * 1.2)
   return round(max(1.0, min(99.0, base - total_penalty)), 1)
 
@@ -537,7 +505,6 @@ def calculate_adjusted_playoff(row):
 df_teams["adjusted_playoff"] = df_teams.apply(
     calculate_adjusted_playoff, axis=1
 )
-
 current_adjusted_score = df_teams.loc[
     df_teams["abbr"] == selected_abbr, "adjusted_playoff"
 ].values[0]
@@ -546,74 +513,87 @@ st.sidebar.markdown(
 )
 
 
-# 8. Weekly Game Win Probability & Exact Distance Travel Analyzer
-with st.sidebar.expander("🏈 Weekly Matchup & Distance Travel", expanded=True):
-  sched = team_schedules.get(st.session_state.selected_team, [])
-  if sched:
-    week_nums = [g["Week"] for g in sched]
-    selected_week = st.selectbox("Select Week to Analyze", week_nums)
+# 8. Official Weekly Matchup & Distance Travel Analyzer
+with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=True):
+  if not official_schedule.empty:
+    team_games = official_schedule[
+        (official_schedule["home_team"] == selected_abbr)
+        | (official_schedule["away_team"] == selected_abbr)
+    ]
+    weeks = sorted(team_games["week"].unique().tolist())
 
-    game_info = next(g for g in sched if g["Week"] == selected_week)
-    opp_name = game_info["Opponent"]
-    loc = game_info["Location"]
+    if weeks:
+      selected_week = st.selectbox("Select Week", weeks)
+      game = team_games[team_games["week"] == selected_week].iloc[0]
 
-    # Calculate exact travel distance in miles if away game
-    home_lat, home_lon = team_df_row["lat"], team_df_row["lon"]
-    opp_row = df_teams[df_teams["team"] == opp_name].iloc[0]
-    opp_lat, opp_lon = opp_row["lat"], opp_row["lon"]
+      is_home = game["home_team"] == selected_abbr
+      opp_abbr = game["away_team"] if is_home else game["home_team"]
+      loc = "Home" if is_home else "Away"
 
-    if loc == "Away":
-      travel_distance_miles = calculate_travel_distance(
-          home_lat, home_lon, opp_lat, opp_lon
+      opp_info = team_dict.get(
+          opp_abbr,
+          {
+              "team": opp_abbr,
+              "lat": team_df_row["lat"],
+              "lon": team_df_row["lon"],
+              "Rating": 1500,
+          },
       )
-    else:
-      travel_distance_miles = 0
 
-    st.markdown(f"**Opponent:** {opp_name} ({loc})")
-    if loc == "Away":
-      st.markdown(f"✈️ **Flight Distance:** `{travel_distance_miles} miles`")
-    else:
-      st.markdown(f"🏠 **Hosting at Home Stadium**")
+      # Distance calculation
+      if loc == "Away":
+        travel_distance_miles = calculate_travel_distance(
+            team_df_row["lat"],
+            team_df_row["lon"],
+            opp_info["lat"],
+            opp_info["lon"],
+        )
+      else:
+        travel_distance_miles = 0
 
-    # Win probability computation incorporating distance fatigue
-    team_base_power = team_df_row["Rating"]
-    opp_rating = opp_row["Rating"]
+      st.markdown(f"**Opponent:** {opp_info['team']} ({loc})")
+      if loc == "Away":
+        st.markdown(f"✈️ **Flight Distance:** `{travel_distance_miles} miles`")
+      else:
+        st.markdown(f"🏠 **Home Field Advantage**")
 
-    inj_penalty = st.session_state.get(f"inj_{selected_abbr}", 0) * 10
-    wea_penalty = st.session_state.get(f"wea_{selected_abbr}", 0) * 6
-    travel_mult = st.session_state.get(f"trv_{selected_abbr}", 0)
+      # Win probability computation
+      team_base_power = team_df_row["Rating"]
+      opp_rating = opp_info["Rating"]
 
-    # Distance penalty: ~1% win probability drop per 500 miles traveled, scaled by travel fatigue slider
-    distance_penalty = (
-        (travel_distance_miles / 500) * 2.0 * (1 + travel_mult * 0.2)
-        if loc == "Away"
-        else 0
-    )
+      inj_penalty = st.session_state.get(f"inj_{selected_abbr}", 0) * 10
+      wea_penalty = st.session_state.get(f"wea_{selected_abbr}", 0) * 6
+      travel_mult = st.session_state.get(f"trv_{selected_abbr}", 0)
 
-    home_advantage = 35 if loc == "Home" else -25
-    adjusted_team_power = (
-        team_base_power
-        + home_advantage
-        - inj_penalty
-        - wea_penalty
-        - distance_penalty
-    )
+      distance_penalty = (
+          (travel_distance_miles / 500) * 2.0 * (1 + travel_mult * 0.2)
+          if loc == "Away"
+          else 0
+      )
+      home_advantage = 35 if loc == "Home" else -25
 
-    rating_diff = adjusted_team_power - opp_rating
-    win_prob = round(1 / (10 ** (-rating_diff / 400) + 1) * 100, 1)
+      adjusted_team_power = (
+          team_base_power
+          + home_advantage
+          - inj_penalty
+          - wea_penalty
+          - distance_penalty
+      )
+      rating_diff = adjusted_team_power - opp_rating
+      win_prob = round(1 / (10 ** (-rating_diff / 400) + 1) * 100, 1)
 
-    st.metric(
-        label=f"Week {selected_week} Win Probability", value=f"{win_prob}%"
-    )
+      st.metric(
+          label=f"Week {selected_week} Win Probability", value=f"{win_prob}%"
+      )
 
-    if win_prob >= 60:
-      st.success("🟢 Projected Favorite")
-    elif win_prob >= 40:
-      st.warning("🟡 Toss-Up Matchup")
-    else:
-      st.error("🔴 Projected Underdog")
+      if win_prob >= 60:
+        st.success("🟢 Projected Favorite")
+      elif win_prob >= 40:
+        st.warning("🟡 Toss-Up Matchup")
+      else:
+        st.error("🔴 Projected Underdog")
   else:
-    st.info("Schedule loading...")
+    st.info("Loading official schedule feed...")
 
 
 # 9. Map Generation
@@ -634,7 +614,7 @@ for _, row in df_teams.iterrows():
   ).add_to(m)
 
 # 10. Render Map & Capture Clicks
-output = st_folium(m, width=900, height=500, key="distance_travel_map")
+output = st_folium(m, width=900, height=500, key="official_schedule_map")
 
 if output and output.get("last_object_clicked_tooltip"):
   clicked_name = output["last_object_clicked_tooltip"]
