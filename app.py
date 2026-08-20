@@ -4,17 +4,19 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 # Page configuration
-st.set_page_config(page_title="NFL Intelligence & Matchup Hub", layout="wide")
+st.set_page_config(
+    page_title="NFL Weekly Matchup & Postseason Simulator", layout="wide"
+)
 
-st.title("NFL Matchup, Schedule & Live Vitals Simulator")
+st.title("NFL Matchup, Weekly Win Probability & Vitals Hub")
 st.markdown(
     "**Click any team's logo on the map** or use the dropdown to inspect team"
-    " vitals, live news tickers, schedule context, and adjustable variable"
-    " sliders."
+    " vitals, week-by-week game win probabilities, schedule context, and"
+    " adjustable simulation sliders."
 )
 
 
-# 1. Complete 32-Team Dataset with Vitals, News, and Schedules
+# 1. Complete 32-Team Dataset with Stats, Ticket Links, and Schedules
 @st.cache_data
 def load_team_data():
   data = [
@@ -410,75 +412,112 @@ def load_team_news():
 team_news = load_team_news()
 
 
-# Sample Schedule Context
+# 3. Detailed Schedule Data with Opponent Baseline Ratings for Win Probability
 @st.cache_data
-def load_sample_schedules():
+def load_full_schedules():
   return {
       "KC": [
-          {"Week": 1, "Opponent": "vs BAL", "Location": "Home", "Travel": "None"},
           {
-              "Week": 2,
-              "Opponent": "@ LAC",
-              "Location": "Away",
-              "Travel": "West Coast (Long)",
-          },
-          {
-              "Week": 3,
-              "Opponent": "@ ATL",
-              "Location": "Away",
-              "Travel": "East Coast (Medium)",
-          },
-          {"Week": 4, "Opponent": "vs LAC", "Location": "Home", "Travel": "None"},
-      ],
-      "SF": [
-          {"Week": 1, "Opponent": "vs NYJ", "Location": "Home", "Travel": "None"},
-          {
-              "Week": 2,
-              "Opponent": "@ MIN",
-              "Location": "Away",
-              "Travel": "Midwest (Long)",
-          },
-          {
-              "Week": 3,
-              "Opponent": "@ LAR",
-              "Location": "Away",
-              "Travel": "Division (Short)",
-          },
-          {"Week": 4, "Opponent": "vs NE", "Location": "Home", "Travel": "None"},
-      ],
-      "BAL": [
-          {"Week": 1, "Opponent": "@ KC", "Location": "Away", "Travel": "Midwest"},
-          {
-              "Week": 2,
-              "Opponent": "vs LV",
+              "Week": 1,
+              "Opponent": "Baltimore Ravens",
               "Location": "Home",
               "Travel": "None",
+              "OppRating": 1620,
+          },
+          {
+              "Week": 2,
+              "Opponent": "Los Angeles Chargers",
+              "Location": "Away",
+              "Travel": "West Coast",
+              "OppRating": 1550,
           },
           {
               "Week": 3,
-              "Opponent": "@ DAL",
+              "Opponent": "Atlanta Falcons",
               "Location": "Away",
-              "Travel": "South",
+              "Travel": "East Coast",
+              "OppRating": 1520,
           },
           {
               "Week": 4,
-              "Opponent": "vs BUF",
+              "Opponent": "Los Angeles Chargers",
               "Location": "Home",
               "Travel": "None",
+              "OppRating": 1550,
+          },
+      ],
+      "SF": [
+          {
+              "Week": 1,
+              "Opponent": "New York Jets",
+              "Location": "Home",
+              "Travel": "None",
+              "OppRating": 1540,
+          },
+          {
+              "Week": 2,
+              "Opponent": "Minnesota Vikings",
+              "Location": "Away",
+              "Travel": "Midwest",
+              "OppRating": 1535,
+          },
+          {
+              "Week": 3,
+              "Opponent": "Los Angeles Rams",
+              "Location": "Away",
+              "Travel": "Division",
+              "OppRating": 1565,
+          },
+          {
+              "Week": 4,
+              "Opponent": "New England Patriots",
+              "Location": "Home",
+              "Travel": "None",
+              "OppRating": 1480,
+          },
+      ],
+      "BAL": [
+          {
+              "Week": 1,
+              "Opponent": "Kansas City Chiefs",
+              "Location": "Away",
+              "Travel": "Midwest",
+              "OppRating": 1650,
+          },
+          {
+              "Week": 2,
+              "Opponent": "Las Vegas Raiders",
+              "Location": "Home",
+              "Travel": "None",
+              "OppRating": 1495,
+          },
+          {
+              "Week": 3,
+              "Opponent": "Dallas Cowboys",
+              "Location": "Away",
+              "Travel": "South",
+              "OppRating": 1590,
+          },
+          {
+              "Week": 4,
+              "Opponent": "Buffalo Bills",
+              "Location": "Home",
+              "Travel": "None",
+              "OppRating": 1610,
           },
       ],
   }
 
 
-team_schedules = load_sample_schedules()
+team_schedules = load_full_schedules()
 
-# 3. State Initialization
+# 4. State Initialization
 if "selected_team" not in st.session_state:
   st.session_state.selected_team = "Kansas City Chiefs"
 
 team_names = df_teams["team"].tolist()
 
-# 4. Sidebar UI & State Sync
+# 5. Sidebar UI & State Sync
 st.sidebar.title("Matchup & Vitals Hub")
 
 current_index = team_names.index(st.session_state.selected_team)
@@ -499,7 +538,7 @@ st.sidebar.metric("Turnover Margin", f"{team_row['TO']:+d}")
 st.sidebar.metric("Strength of Schedule", team_row["SOS"])
 st.sidebar.link_button("🎟️ Get Tickets", team_row["ticket_link"])
 
-# 5. Live Team Vitals & News Ticker Panel
+# 6. Live Team Vitals & News Ticker Panel
 with st.sidebar.expander("📰 Live Team Vitals & News", expanded=True):
   news_list = team_news.get(
       selected_abbr,
@@ -511,18 +550,19 @@ with st.sidebar.expander("📰 Live Team Vitals & News", expanded=True):
   for item in news_list:
     st.markdown(f"- {item}")
   st.caption(
-      "*Note: Automated feeds pull weekly status reports; sliders below allow"
-      " custom scenario testing.*"
+      "*Note: Automated feeds pull weekly status updates; simulation sliders"
+      " below test what-if scenarios.*"
   )
 
-# 6. Sliding-Scale Variables with Detailed Explanations
+# 7. Sliding-Scale Variables with Detailed Explanations
 st.sidebar.markdown("---")
 st.sidebar.subheader("Variable Impact Controls")
 
 st.sidebar.markdown(
     "**1. Injury Attrition Severity (0-10):**\n"
-    "> *Measures overall depth erosion. Each point reduces win expectancy"
-    " slightly, simulating key starters missing time.*"
+    "> *Measures overall depth erosion and missing starters. Higher scores"
+    " directly degrade both weekly win probabilities and long-term playoff"
+    " odds.*"
 )
 injury_slider = st.sidebar.slider(
     "Injury Attrition", 0, 10, 0, key=f"inj_{selected_abbr}"
@@ -530,30 +570,27 @@ injury_slider = st.sidebar.slider(
 
 st.sidebar.markdown(
     "**2. Weather Severity (0-10):**\n"
-    "> *Accounts for severe cold, high wind, or heavy rain. High weather"
-    " severity penalizes dome/warm-weather teams playing outdoors, reducing"
-    " passing efficiency.*"
+    "> *Accounts for severe cold, wind, or rain. Penalizes passing efficiency"
+    " for outdoor games.*"
 )
 weather_slider = st.sidebar.slider(
     "Weather Severity", 0, 10, 0, key=f"wea_{selected_abbr}"
 )
 
-st.system_travel_desc = st.sidebar.markdown(
+st.sidebar.markdown(
     "**3. Travel Fatigue / Short Rest (0-10):**\n"
-    "> *Factors in cross-country travel, short weeks (Thursday games), or"
-    " back-to-back road games, which traditionally degrade performance metrics"
-    " due to fatigue.*"
+    "> *Factors in cross-country travel or short weeks (e.g., Thursday games),"
+    " decreasing win probability for away games.*"
 )
 travel_slider = st.sidebar.slider(
     "Travel Fatigue", 0, 10, 0, key=f"trv_{selected_abbr}"
 )
 
 
-# 7. Calculation Engine combining Variables
+# 8. Calculation Engine for Playoff & Weekly Win Probabilities
 def calculate_adjusted_playoff(row):
   base = row["BasePlayoff"]
   abbr = row["abbr"]
-
   inj = st.session_state.get(f"inj_{abbr}", 0)
   wea = st.session_state.get(f"wea_{abbr}", 0)
   trv = st.session_state.get(f"trv_{abbr}", 0)
@@ -573,22 +610,61 @@ st.sidebar.markdown(
     f"### 🎯 Adjusted Playoff Odds: {current_adjusted_score}%"
 )
 
-# 8. Schedule & Travel Context Expander
-with st.sidebar.expander("📅 Schedule & Travel Context", expanded=False):
-  sched = team_schedules.get(
-      selected_abbr,
-      [
-          {"Week": 1, "Opponent": "Upcoming Fixture", "Location": "Home", "Travel": "None"},
-          {"Week": 2, "Opponent": "Away Game", "Location": "Away", "Travel": "Cross-Country"},
-      ],
-  )
-  for game in sched:
-    st.markdown(
-        f"**Wk {game['Week']}**: {game['Opponent']} | *{game['Location']}* |"
-        f" Travel: {game['Travel']}"
+
+# 9. Week-to-Week Game Win Probability Calculator
+with st.sidebar.expander("🏈 Weekly Game Win Probability", expanded=True):
+  sched = team_schedules.get(selected_abbr, [])
+  if sched:
+    week_nums = [g["Week"] for g in sched]
+    selected_week = st.selectbox("Select Week to Analyze", week_nums)
+
+    game_info = next(g for g in sched if g["Week"] == selected_week)
+    opp_name = game_info["Opponent"]
+    loc = game_info["Location"]
+    travel_type = game_info["Travel"]
+    opp_rating = game_info["OppRating"]
+
+    # Calculate weekly win probability based on team rating, location, and active slider penalties
+    team_base_power = 1550 - (team_row["Off"] * 2) - (team_row["Def"] * 2)
+    inj_penalty = st.session_state.get(f"inj_{selected_abbr}", 0) * 12
+    wea_penalty = st.session_state.get(f"wea_{selected_abbr}", 0) * 8
+    trv_penalty = (
+        15 if loc == "Away" and travel_type != "None" else 0
+    ) + st.session_state.get(f"trv_{selected_abbr}", 0) * 10
+
+    home_advantage = 35 if loc == "Home" else -25
+
+    adjusted_team_power = (
+        team_base_power
+        + home_advantage
+        - inj_penalty
+        - wea_penalty
+        - trv_penalty
     )
 
-# 9. Map Generation
+    # Win probability estimation formula
+    rating_diff = adjusted_team_power - opp_rating
+    win_prob = round(
+        1 / (10 ** (-rating_diff / 400) + 1) * 100, 1
+    )  # standard Elo win probability formula
+
+    st.markdown(f"**Opponent:** {opp_name} ({loc})")
+    st.markdown(f"**Travel Context:** {travel_type}")
+    st.metric(
+        label=f"Week {selected_week} Win Probability", value=f"{win_prob}%"
+    )
+
+    if win_prob >= 60:
+      st.success("🟢 Projected Favorite")
+    elif win_prob >= 40:
+      st.warning("🟡 Toss-Up Matchup")
+    else:
+      st.error("🔴 Projected Underdog")
+  else:
+    st.info("Schedule data loading for this team.")
+
+
+# 10. Map Generation
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 
 for _, row in df_teams.iterrows():
@@ -605,8 +681,8 @@ for _, row in df_teams.iterrows():
       popup=folium.Popup(popup_text, max_width=300),
   ).add_to(m)
 
-# 10. Render Map & Capture Reliable Clicks
-output = st_folium(m, width=900, height=500, key="all_in_one_map")
+# 11. Render Map & Capture Reliable Clicks
+output = st_folium(m, width=900, height=500, key="weekly_prob_map")
 
 if output and output.get("last_object_clicked_tooltip"):
   clicked_name = output["last_object_clicked_tooltip"]
