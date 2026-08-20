@@ -1,6 +1,5 @@
-math
+streamlit
+streamlit-folium
+pandas
 folium
-pandas as pd
-streamlit as st
-streamlit_folium
- st_folium
+nfl-data-py
