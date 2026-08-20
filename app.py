@@ -6,18 +6,19 @@ from streamlit_folium import st_folium
 
 # Page configuration
 st.set_page_config(
-    page_title="NFL Team Logo Postseason Map", layout="wide"
+    page_title="NFL Granular Player Injury & Postseason Map", layout="wide"
 )
 
-st.title("NFL Postseason Probability Map (Team Logo Edition)")
+st.title("NFL Granular Player Injury & Postseason Simulator")
 st.markdown(
-    "Select individual players in the sidebar to simulate injuries. The map"
-    " displays official team logos that update dynamically based on"
-    " adjusted **Playoff and Super Bowl Probabilities**."
+    "Select any team in the sidebar to adjust individual star player injury"
+    " sliders (0 to 10). Player skill-set **'Deadliness' weights** ensure elite"
+    " playmakers (like Franchise QBs and Elite Pass Rushers) impact"
+    " probabilities realistically."
 )
 
 
-# 1. Load Team Data with Official ESPN Logo URLs
+# 1. Team Base Data & Logos
 @st.cache_data
 def load_team_data():
   data = [
@@ -279,7 +280,6 @@ def load_team_data():
       },
   ]
   df = pd.DataFrame(data)
-  # Dynamically assign official transparent logo URL for each team
   df["logo_url"] = df["abbr"].apply(
       lambda x: f"https://a.espncdn.com/i/teamlogos/nfl/500/{x.lower()}.png"
   )
@@ -288,65 +288,124 @@ def load_team_data():
 
 df_teams = load_team_data()
 
-
-# 2. Fetch Live Roster Data for Individual Player Selection
+# 2. Curated Star Player Dictionary with Skill-Set "Deadliness" Weights
+# (Weight factors: QB = 2.5x impact, Elite Playmakers/Pass Rushers = 1.5x, Standard Starters = 1.0x)
 @st.cache_data
-def load_rosters():
-  try:
-    rosters = nfl.import_rosters([2026])
-    return rosters[["team", "player_name", "position", "status"]].dropna()
-  except Exception:
-    return pd.DataFrame(columns=["team", "player_name", "position", "status"])
+def get_star_players():
+  return {
+      "KC": [
+          {"name": "Patrick Mahomes (QB)", "weight": 3.0},
+          {"name": "Travis Kelce (TE)", "weight": 1.8},
+          {"name": "Chris Jones (DT)", "weight": 1.6},
+          {"name": "Creed Humphrey (C)", "weight": 1.2},
+      ],
+      "SF": [
+          {"name": "Brock Purdy (QB)", "weight": 2.2},
+          {"name": "Christian McCaffrey (RB)", "weight": 2.5},
+          {"name": "Nick Bosa (DE)", "weight": 2.0},
+          {"name": "Fred Warner (LB)", "weight": 1.8},
+      ],
+      "BAL": [
+          {"name": "Lamar Jackson (QB)", "weight": 3.0},
+          {"name": "Derrick Henry (RB)", "weight": 2.0},
+          {"name": "Kyle Hamilton (S)", "weight": 1.5},
+          {"name": "Roquan Smith (LB)", "weight": 1.6},
+      ],
+      "BUF": [
+          {"name": "Josh Allen (QB)", "weight": 3.0},
+          {"name": "James Cook (RB)", "weight": 1.4},
+          {"name": "Matt Milano (LB)", "weight": 1.5},
+          {"name": "Greg Rousseau (DE)", "weight": 1.3},
+      ],
+      "PHI": [
+          {"name": "Jalen Hurts (QB)", "weight": 2.4},
+          {"name": "Saquon Barkley (RB)", "weight": 2.2},
+          {"name": "A.J. Brown (WR)", "weight": 1.8},
+          {"name": "Lane Johnson (OT)", "weight": 1.9},
+      ],
+      "DET": [
+          {"name": "Jared Goff (QB)", "weight": 2.1},
+          {"name": "Amon-Ra St. Brown (WR)", "weight": 1.9},
+          {"name": "Penei Sewell (OT)", "weight": 1.9},
+          {"name": "Aidan Hutchinson (DE)", "weight": 2.2},
+      ],
+      # Default fallback list for remaining teams
+      "DEFAULT": [
+          {"name": "Franchise Quarterback (QB)", "weight": 2.5},
+          {"name": "WR1 Playmaker (WR)", "weight": 1.5},
+          {"name": "Lockdown Corner (CB)", "weight": 1.4},
+          {"name": "Star Pass Rusher (DE)", "weight": 1.6},
+          {"name": "Left Tackle (OT)", "weight": 1.5},
+      ],
+  }
 
 
-df_rosters = load_rosters()
+star_rosters = get_star_players()
 
-# 3. Sidebar Interactive Controls
-st.sidebar.header("Postseason Simulation Engine")
+# 3. Sidebar Controls & Persistent State Initialization
+st.sidebar.header("Granular Injury Simulator")
 target_metric = st.sidebar.selectbox(
     "View Map Metric", ["Playoff Probability (%)", "Super Bowl Likelihood (%)"]
 )
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Individual Player Injury Toggles")
+st.sidebar.subheader("Team & Player Selection")
 
 selected_team_name = st.sidebar.selectbox(
-    "Choose Team to Modify", df_teams["team"].tolist()
+    "Choose Team to Inspect", df_teams["team"].tolist()
 )
 selected_abbr = df_teams.loc[
     df_teams["team"] == selected_team_name, "abbr"
 ].values[0]
 
-team_players = (
-    df_rosters[df_rosters["team"] == selected_abbr]["player_name"].tolist()
-    if not df_rosters.empty
-    else ["Star Quarterback", "WR1", "CB1", "Pass Rusher"]
-)
+# Initialize global injury tracker in session state
+if "player_injuries" not in st.session_state:
+  st.session_state.player_injuries = {}
 
-injured_players = st.sidebar.multiselect(
-    f"Mark Players Out/Injured for {selected_abbr}", options=team_players
-)
+st.sidebar.markdown(f"**Adjust Injury Severity (0 = Healthy, 10 = Out for Season)**")
 
-if "injured_dict" not in st.session_state:
-  st.session_state.injured_dict = {}
+# Retrieve players for selected team
+team_players = star_rosters.get(selected_abbr, star_rosters["DEFAULT"])
 
-st.session_state.injured_dict[selected_abbr] = injured_players
+# Render individual sliding scale for each player
+team_injury_scores = {}
+for player in team_players:
+  p_name = player["name"]
+  p_weight = player["weight"]
+
+  # Unique key for session state per team/player
+  slider_key = f"{selected_abbr}_{p_name}"
+  current_val = st.session_state.player_injuries.get(slider_key, 0)
+
+  slider_val = st.sidebar.slider(
+      f"{p_name} (Deadliness: {p_weight}x)", 0, 10, current_val, key=slider_key
+  )
+  team_injury_scores[p_name] = {"severity": slider_val, "weight": p_weight}
 
 
-# 4. Calculation Engine
-def calculate_postseason_odds(row):
+# 4. Calculation Engine with Skill-Set Multipliers
+def calculate_adjusted_odds(row):
   abbr = row["abbr"]
   base_playoff = row["BasePlayoff"]
   base_sb = row["BaseSB"]
 
-  team_injuries = st.session_state.injured_dict.get(abbr, [])
-  injury_count = len(team_injuries)
+  total_penalty = 0.0
 
-  playoff_penalty = injury_count * 7.5
-  sb_penalty = injury_count * 1.5
+  # Sum up injuries across all teams stored in session state
+  for key, severity in st.session_state.player_injuries.items():
+    if key.startswith(abbr + "_"):
+      # Extract weight dynamically from player config
+      p_name = key.replace(abbr + "_", "")
+      # Find weight
+      p_list = star_rosters.get(abbr, star_rosters["DEFAULT"])
+      weight = next((item["weight"] for item in p_list if item["name"] == p_name), 1.5)
 
-  adjusted_playoff = max(1.0, min(99.0, base_playoff - playoff_penalty))
-  adjusted_sb = max(0.1, min(50.0, base_sb - sb_penalty))
+      # Penalty formula: Severity (0-10) * Skill Weight * scaling factor
+      total_penalty += severity * weight
+
+  # Apply penalties to probabilities
+  adjusted_playoff = max(1.0, min(99.0, base_playoff - (total_penalty * 1.8)))
+  adjusted_sb = max(0.1, min(50.0, base_sb - (total_penalty * 0.4)))
 
   if target_metric == "Playoff Probability (%)":
     return round(adjusted_playoff, 1)
@@ -354,21 +413,26 @@ def calculate_postseason_odds(row):
     return round(adjusted_sb, 1)
 
 
-df_teams["displayed_score"] = df_teams.apply(calculate_postseason_odds, axis=1)
+df_teams["displayed_score"] = df_teams.apply(calculate_adjusted_odds, axis=1)
 
 
-# 5. Build Interactive Map with Team Logo Icons
+# 5. Build Interactive Folium Map with Logo Icons
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 
 for _, row in df_teams.iterrows():
+  # Count active injuries for popup details
+  abbr = row["abbr"]
+  team_total_severity = sum(
+      val for k, val in st.session_state.player_injuries.items() if k.startswith(abbr + "_")
+  )
+
   popup_text = f"""
     <b>{row['team']} ({row['abbr']})</b><br>
     Metric: {target_metric}<br>
     <b>Current Odds: {row['displayed_score']}%</b><br>
-    <i>Injured Count: {len(st.session_state.injured_dict.get(row['abbr'], []))}</i>
+    <i>Injury Severity Sum: {team_total_severity}</i>
     """
 
-  # Scale icon size dynamically based on their success score
   icon_size_val = int(
       min(
           45,
