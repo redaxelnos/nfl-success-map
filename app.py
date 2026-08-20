@@ -69,31 +69,50 @@ if st.session_state.team_dropdown != st.session_state.selected_team:
 
 team_row = df_teams[df_teams["team"] == st.session_state.selected_team].iloc[0]
 
-# Display Stats & Tickets (Fixed f-strings)
+# Display Stats & Tickets
 st.sidebar.markdown(f"### {team_row['team']} Analytics")
 st.sidebar.metric("Offensive Rank", f"#{team_row['Off']}")
 st.sidebar.metric("Defensive Rank", f"#{team_row['Def']}")
 st.sidebar.metric("Turnover Margin", f"{team_row['TO']:+d}")
+st.sidebar.metric("Strength of Schedule", team_row['SOS'])
 st.sidebar.link_button("🎟️ Get Tickets", team_row['ticket_link'])
 
-# 4. Map Generation
+# 4. Build GeoJSON structure for robust click handling
+features = []
+for _, row in df_teams.iterrows():
+    feature = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [row["lon"], row["lat"]]},
+        "properties": {
+            "team": row["team"],
+            "abbr": row["abbr"],
+            "logo_url": row["logo_url"]
+        }
+    }
+    features.append(feature)
+
+geojson_data = {"type": "FeatureCollection", "features": features}
+
+# 5. Generate Map
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 
-for _, row in df_teams.iterrows():
-    icon = folium.CustomIcon(row['logo_url'], icon_size=(35, 35))
-    folium.Marker(
-        location=[row['lat'], row['lon']], 
-        icon=icon, 
-        tooltip=row['team'],
-        popup=row['team']
-    ).add_to(m)
+folium.GeoJson(
+    geojson_data,
+    marker_function=lambda feature, latlng: folium.Marker(
+        location=latlng,
+        icon=folium.CustomIcon(feature["properties"]["logo_url"], icon_size=(35, 35)),
+        tooltip=feature["properties"]["team"]
+    )
+).add_to(m)
 
-# 5. Render Map & Capture Clicks
-output = st_folium(m, width=900, height=500)
+# 6. Render Map & Capture Reliable Clicks
+output = st_folium(m, width=900, height=500, key="geojson_map")
 
-# Capture clicks on map icons and sync with sidebar
-if output and output.get("last_object_clicked_tooltip"):
-    clicked_name = output["last_object_clicked_tooltip"]
-    if clicked_name in team_names and clicked_name != st.session_state.selected_team:
-        st.session_state.selected_team = clicked_name
-        st.rerun()
+# Capture clicks on GeoJson properties
+if output and output.get("last_object_clicked"):
+    props = output["last_object_clicked"].get("properties")
+    if props and "team" in props:
+        clicked_name = props["team"]
+        if clicked_name != st.session_state.selected_team:
+            st.session_state.selected_team = clicked_name
+            st.rerun()
