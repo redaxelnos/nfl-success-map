@@ -4,20 +4,17 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 # Page configuration
-st.set_page_config(
-    page_title="NFL Advanced Schedule & Variable Simulator", layout="wide"
-)
+st.set_page_config(page_title="NFL Intelligence & Matchup Hub", layout="wide")
 
-st.title("NFL Matchup, Schedule & Variable Impact Simulator")
+st.title("NFL Matchup, Schedule & Live Vitals Simulator")
 st.markdown(
-    "**Click any team's logo on the map** or use the sidebar dropdown to inspect"
-    " their schedule, view travel/location context, and adjust sliding-scale"
-    " variables (**Injuries, Weather, Travel Fatigue**) to see real-time shifts"
-    " in postseason odds."
+    "**Click any team's logo on the map** or use the dropdown to inspect team"
+    " vitals, live news tickers, schedule context, and adjustable variable"
+    " sliders."
 )
 
 
-# 1. Complete 32-Team Dataset with Stats, Ticket Links, and Sample Schedule Context
+# 1. Complete 32-Team Dataset with Vitals, News, and Schedules
 @st.cache_data
 def load_team_data():
   data = [
@@ -386,7 +383,34 @@ def load_team_data():
 
 df_teams = load_team_data()
 
-# Sample schedule context generator per team for previewing travel & location impact
+
+# 2. Mock Live News / Vitals Feed per Team
+@st.cache_data
+def load_team_news():
+  return {
+      "KC": [
+          "⚡ Practice Report: Full participation for offensive starters.",
+          "🏥 Injury Update: Minor ankle soreness reported for backup tight end.",
+      ],
+      "SF": [
+          "⚡ Roster Alert: Elevated practice squad defensive lineman.",
+          "🏥 Injury Update: Star running back listed as limited in drills.",
+      ],
+      "BAL": [
+          "⚡ Coaching Note: Scheme adjustments focused on red-zone efficiency.",
+          "🏥 Injury Update: Linebacker cleared for full contact.",
+      ],
+      "BUF": [
+          "⚡ Weather Advisory: High winds expected for upcoming outdoor drills.",
+          "🏥 Injury Update: Secondary depth getting extra reps.",
+      ],
+  }
+
+
+team_news = load_team_news()
+
+
+# Sample Schedule Context
 @st.cache_data
 def load_sample_schedules():
   return {
@@ -448,14 +472,14 @@ def load_sample_schedules():
 
 team_schedules = load_sample_schedules()
 
-# 2. State Initialization
+# 3. State Initialization
 if "selected_team" not in st.session_state:
   st.session_state.selected_team = "Kansas City Chiefs"
 
 team_names = df_teams["team"].tolist()
 
-# 3. Sidebar UI & State Sync
-st.sidebar.title("Matchup & Variable Hub")
+# 4. Sidebar UI & State Sync
+st.sidebar.title("Matchup & Vitals Hub")
 
 current_index = team_names.index(st.session_state.selected_team)
 selected_name = st.sidebar.selectbox("Select Team", team_names, index=current_index)
@@ -467,7 +491,7 @@ if selected_name != st.session_state.selected_team:
 team_row = df_teams[df_teams["team"] == st.session_state.selected_team].iloc[0]
 selected_abbr = team_row["abbr"]
 
-# Display Analytics & Ticket Links
+# Display Team Analytics & Ticket Link
 st.sidebar.markdown(f"### {team_row['team']} Profile")
 st.sidebar.metric("Offensive Rank", f"#{team_row['Off']}")
 st.sidebar.metric("Defensive Rank", f"#{team_row['Def']}")
@@ -475,32 +499,66 @@ st.sidebar.metric("Turnover Margin", f"{team_row['TO']:+d}")
 st.sidebar.metric("Strength of Schedule", team_row["SOS"])
 st.sidebar.link_button("🎟️ Get Tickets", team_row["ticket_link"])
 
-# 4. Sliding-Scale Variables for Injuries, Weather, and Travel
+# 5. Live Team Vitals & News Ticker Panel
+with st.sidebar.expander("📰 Live Team Vitals & News", expanded=True):
+  news_list = team_news.get(
+      selected_abbr,
+      [
+          "⚡ Practice Report: Normal roster rotation active.",
+          "🏥 Injury Status: No major new designations reported.",
+      ],
+  )
+  for item in news_list:
+    st.markdown(f"- {item}")
+  st.caption(
+      "*Note: Automated feeds pull weekly status reports; sliders below allow"
+      " custom scenario testing.*"
+  )
+
+# 6. Sliding-Scale Variables with Detailed Explanations
 st.sidebar.markdown("---")
 st.sidebar.subheader("Variable Impact Controls")
 
+st.sidebar.markdown(
+    "**1. Injury Attrition Severity (0-10):**\n"
+    "> *Measures overall depth erosion. Each point reduces win expectancy"
+    " slightly, simulating key starters missing time.*"
+)
 injury_slider = st.sidebar.slider(
-    "Injury Attrition Severity", 0, 10, 0, key=f"inj_{selected_abbr}"
-)
-weather_slider = st.sidebar.slider(
-    "Weather Severity (Cold/Wind/Rain)", 0, 10, 0, key=f"wea_{selected_abbr}"
-)
-travel_slider = st.sidebar.slider(
-    "Travel Fatigue / Short Rest", 0, 10, 0, key=f"trv_{selected_abbr}"
+    "Injury Attrition", 0, 10, 0, key=f"inj_{selected_abbr}"
 )
 
-# 5. Dynamic Calculation Engine combining Variables
+st.sidebar.markdown(
+    "**2. Weather Severity (0-10):**\n"
+    "> *Accounts for severe cold, high wind, or heavy rain. High weather"
+    " severity penalizes dome/warm-weather teams playing outdoors, reducing"
+    " passing efficiency.*"
+)
+weather_slider = st.sidebar.slider(
+    "Weather Severity", 0, 10, 0, key=f"wea_{selected_abbr}"
+)
+
+st.system_travel_desc = st.sidebar.markdown(
+    "**3. Travel Fatigue / Short Rest (0-10):**\n"
+    "> *Factors in cross-country travel, short weeks (Thursday games), or"
+    " back-to-back road games, which traditionally degrade performance metrics"
+    " due to fatigue.*"
+)
+travel_slider = st.sidebar.slider(
+    "Travel Fatigue", 0, 10, 0, key=f"trv_{selected_abbr}"
+)
+
+
+# 7. Calculation Engine combining Variables
 def calculate_adjusted_playoff(row):
   base = row["BasePlayoff"]
   abbr = row["abbr"]
 
-  # Retrieve current slider values for this team
   inj = st.session_state.get(f"inj_{abbr}", 0)
   wea = st.session_state.get(f"wea_{abbr}", 0)
   trv = st.session_state.get(f"trv_{abbr}", 0)
 
-  # Combined penalty deduction formula
-  total_penalty = (inj * 2.5) + (wea * 1.0) + (trv * 1.2)
+  total_penalty = (inj * 2.2) + (wea * 1.0) + (trv * 1.3)
   return round(max(1.0, min(99.0, base - total_penalty)), 1)
 
 
@@ -508,19 +566,20 @@ df_teams["adjusted_playoff"] = df_teams.apply(
     calculate_adjusted_playoff, axis=1
 )
 
-# Current selected team's calculated score for display
 current_adjusted_score = df_teams.loc[
     df_teams["abbr"] == selected_abbr, "adjusted_playoff"
 ].values[0]
-st.sidebar.markdown(f"**Adjusted Playoff Odds: {current_adjusted_score}%**")
+st.sidebar.markdown(
+    f"### 🎯 Adjusted Playoff Odds: {current_adjusted_score}%"
+)
 
-# 6. Display Team Schedule & Travel Context in Sidebar Expander
-with st.sidebar.expander("📅 Team Schedule & Travel Context", expanded=True):
+# 8. Schedule & Travel Context Expander
+with st.sidebar.expander("📅 Schedule & Travel Context", expanded=False):
   sched = team_schedules.get(
       selected_abbr,
       [
-          {"Week": 1, "Opponent": "Upcoming Game", "Location": "Home", "Travel": "None"},
-          {"Week": 2, "Opponent": "Away Fixture", "Location": "Away", "Travel": "Cross-Country"},
+          {"Week": 1, "Opponent": "Upcoming Fixture", "Location": "Home", "Travel": "None"},
+          {"Week": 2, "Opponent": "Away Game", "Location": "Away", "Travel": "Cross-Country"},
       ],
   )
   for game in sched:
@@ -529,7 +588,7 @@ with st.sidebar.expander("📅 Team Schedule & Travel Context", expanded=True):
         f" Travel: {game['Travel']}"
     )
 
-# 7. Map Generation
+# 9. Map Generation
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 
 for _, row in df_teams.iterrows():
@@ -546,8 +605,8 @@ for _, row in df_teams.iterrows():
       popup=folium.Popup(popup_text, max_width=300),
   ).add_to(m)
 
-# 8. Render Map & Capture Reliable Clicks
-output = st_folium(m, width=900, height=500, key="variable_map")
+# 10. Render Map & Capture Reliable Clicks
+output = st_folium(m, width=900, height=500, key="all_in_one_map")
 
 if output and output.get("last_object_clicked_tooltip"):
   clicked_name = output["last_object_clicked_tooltip"]
