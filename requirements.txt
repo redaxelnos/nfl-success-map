@@ -1,5 +1,4 @@
-streamlit
-streamlit-folium
+nfl_data_py==0.3.3
 pandas
-folium
-nfl-data-py
+scikit-learn
+numpy
