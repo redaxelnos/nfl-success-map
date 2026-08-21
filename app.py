@@ -19,7 +19,7 @@ st.markdown(
     "interactive what-if simulation sliders."
 )
 
-# 1. Complete 32-Team Dataset with Coordinates, Metadata & Stadium Vitals
+# 1. Complete 32-Team Dataset with Dynamic Rankings Integration
 @st.cache_data
 def load_team_data():
     data = [
@@ -57,6 +57,17 @@ def load_team_data():
         {"team": "Washington Commanders", "abbr": "WAS", "lat": 38.9076, "lon": -76.8645, "stadium": "Northwest Stadium", "surface": "Bermuda Grass", "roof": "Open / Outdoor", "capacity": 67617, "Off": 25, "Def": 28, "SOS": ".485", "TO": -2, "BasePlayoff": 38.0, "Rating": 1510},
     ]
     df = pd.DataFrame(data)
+    
+    # Merge dynamic backend rankings if available
+    rank_file = "team_rankings.csv"
+    if os.path.exists(rank_file):
+        try:
+            rank_df = pd.read_csv(rank_file)
+            df = df.drop(columns=['Off', 'Def', 'SOS', 'Rating'], errors='ignore')
+            df = df.merge(rank_df, on="abbr", how="left")
+        except Exception:
+            pass
+
     df["logo_url"] = df["abbr"].apply(
         lambda x: f"https://a.espncdn.com/i/teamlogos/nfl/500/{x.lower()}.png"
     )
@@ -240,7 +251,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             is_home = (home_abbr == selected_abbr)
             opp_abbr = away_abbr if is_home else home_abbr
             
-            # Alias mapping for nfl_data_py mismatches
             abbr_mapping = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
             clean_home = abbr_mapping.get(home_abbr, home_abbr)
             clean_away = abbr_mapping.get(away_abbr, away_abbr)
@@ -267,11 +277,10 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 target_lat = international_games[game_key]["lat"]
                 target_lon = international_games[game_key]["lon"]
                 
-                # Calculate extreme flight distance from the selected team's home city to the country
                 travel_distance_miles = calculate_travel_distance(
                     team_df_row["lat"], team_df_row["lon"], target_lat, target_lon
                 )
-                hfa_points = 0 # Strip home field advantage for neutral sites
+                hfa_points = 0
             else:
                 loc = "Home" if is_home else "Away"
                 venue_name = team_df_row["stadium"] if is_home else opp_info.get("stadium", "Opponent Stadium")
@@ -284,7 +293,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 else:
                     travel_distance_miles = 0
 
-            # --- DYNAMIC UI DISPLAY ---
             st.markdown(f"**Opponent:** {opp_info['team']} ({loc})")
             st.markdown(f"🏟️ **Venue:** `{venue_name}`")
             
@@ -314,7 +322,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 except Exception:
                     pass
 
-            # --- ADVANCED ZERO-SUM MATH LOGIC ---
             if not used_ml:
                 team_base_power = team_df_row["Rating"]
                 opp_rating = opp_info["Rating"]
@@ -322,7 +329,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 inj_penalty = inj_val * 10
                 wea_penalty = wea_val * 6
                 
-                # Cap base distance penalty at 3,000 miles to prevent extreme Elo breaks, unless slider is used
                 capped_dist = min(travel_distance_miles, 3000) if is_international else travel_distance_miles
                 distance_penalty = (capped_dist / 500) * 2.0 * (1 + trv_val * 0.2) if travel_distance_miles > 0 else 0
 
@@ -331,7 +337,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 elif not is_home and not is_international:
                     rating_diff = (team_base_power - inj_penalty - wea_penalty - distance_penalty) - (opp_rating + hfa_points)
                 else:
-                    # TRUE NEUTRAL MATH: Apply respective flight penalties to BOTH teams based on their origin
                     opp_travel = calculate_travel_distance(opp_info["lat"], opp_info["lon"], target_lat, target_lon)
                     opp_dist_penalty = (min(opp_travel, 3000) / 500) * 2.0 * (1 + trv_val * 0.2)
                     
@@ -372,7 +377,6 @@ for _, row in df_teams.iterrows():
         popup=folium.Popup(popup_text, max_width=300),
     ).add_to(m)
 
-# Render Map & Handle Interactivity
 output = st_folium(m, width=900, height=500, key="fully_loaded_map")
 
 if output and output.get("last_object_clicked_tooltip"):
