@@ -15,10 +15,10 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title(f"Official NFL Schedule, Distance Travel & Intelligence Hub ({CURRENT_YEAR})")
+st.title(f"Official NFL Schedule, Travel & Intelligence Hub ({CURRENT_YEAR})")
 st.markdown(
-    "**KP League Intelligence Hub:** Automatically syncing roster data for **Seattle Axel's** "
-    "and cross-referencing available waiver wire targets against real-time EPA and weather models."
+    "**KP League (ID# 859017) — Seattle Axel's Hub:** Player success ratings powered by "
+    "zero-leakage machine learning EPA, live stadium weather penalties, and opponent defensive vulnerabilities."
 )
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
@@ -399,38 +399,56 @@ else:
     st.sidebar.progress(safe_progress_val(win_prob))
     st.sidebar.caption("⚡ *Live play-by-play and win probability will stream here automatically at kickoff.*")
 
-# --- KP LEAGUE: SEATTLE AXEL'S ROSTER & WAIVER HUB ---
+# --- KP LEAGUE (#859017): SEATTLE AXEL'S PLAYER RATINGS & WAIVER HUB ---
 st.markdown("---")
-st.subheader("🏆 KP League: Seattle Axel's Roster & Waiver Wire Intelligence Hub")
-st.markdown("Directly evaluating your active roster teams against defensive EPA vulnerability and scanning available waiver targets.")
+st.subheader("🏆 KP League (ID# 859017): Seattle Axel's Player Success Ratings")
+st.markdown("Evaluating your rostered players and available waiver wire targets using our zero-leakage machine learning defensive EPA metrics.")
 
-kp_col1, kp_col2 = st.columns([1, 1])
+p_col1, p_col2 = st.columns([1, 1])
 
-with kp_col1:
-    st.markdown("### 📋 Seattle Axel's Active Lineup Matchups")
-    default_kp_roster = st.multiselect(
-        "Active Roster Teams", 
-        team_names, 
-        default=["Kansas City Chiefs", "Buffalo Bills", "San Francisco 49ers", "Baltimore Ravens", "Detroit Lions"],
-        key="kp_active_roster"
+with p_col1:
+    st.markdown("### 📋 Seattle Axel's Roster Players")
+    eval_week_player = st.selectbox("Select Week", range(1, 19), index=0, key="player_eval_week")
+    
+    default_players = [
+        {"name": "Josh Allen", "pos": "QB", "team": "Buffalo Bills"},
+        {"name": "Dak Prescott", "pos": "QB", "team": "Dallas Cowboys"},
+        {"name": "Davante Adams", "pos": "WR", "team": "Las Vegas Raiders"},
+        {"name": "Dalvin Cook", "pos": "RB", "team": "Dallas Cowboys"},
+        {"name": "Travis Kelce", "pos": "TE", "team": "Kansas City Chiefs"}
+    ]
+    
+    player_input_names = st.text_area(
+        "Roster Players (Format: Player Name - Team Abbreviation)",
+        value="\n".join([f"{p['name']} - {p['team']}" for p in default_players]),
+        help="Edit or add your players here. Each on a new line with their NFL team abbreviation."
     )
-    kp_week = st.selectbox("Evaluation Week", range(1, 19), index=0, key="kp_eval_week")
 
-with kp_col2:
-    st.markdown("### 💡 Top Available Waiver Targets")
-    st.markdown("Teams on the wire facing bottom-tier defenses (Def Rank #23–#32) this week.")
-    waiver_tier = st.selectbox("Filter Threshold", ["Favorable Matchups Only (Def #23+)"], key="kp_waiver_tier")
+with p_col2:
+    st.markdown("### 💡 Waiver Wire / Free Agent Swap Finder")
+    st.markdown("Scan unrostered teams facing bottom-tier defenses (Def Rank #23–#32) for high-upside pickups.")
+    waiver_pos_filter = st.selectbox("Waiver Strategy", ["Show All Favorable Matchups", "Top 5 Elite Targets Only"], key="waiver_strat")
 
-# Render Active Roster Table
-if default_kp_roster and not official_schedule.empty:
-    st.markdown(f"#### 📊 Week {kp_week} Roster Matchup Grades")
-    roster_evals = []
-    for t_name in default_kp_roster:
-        t_row = df_teams[df_teams["team"] == t_name].iloc[0]
-        t_abbr = t_row["abbr"]
+parsed_players = []
+for line in player_input_names.split("\n"):
+    if "-" in line:
+        parts = line.split("-")
+        name = parts[0].strip()
+        t_str = parts[1].strip().upper()
+        matched_row = df_teams[(df_teams["abbr"] == t_str) | (df_teams["team"].str.upper().str.contains(t_str))]
+        if not matched_row.empty:
+            parsed_players.append({"name": name, "team_row": matched_row.iloc[0]})
+
+if parsed_players and not official_schedule.empty:
+    st.markdown(f"#### 📊 Week {eval_week_player} Success Ratings (Seattle Axel's)")
+    player_evals = []
+    
+    for p in parsed_players:
+        t_name = p["team_row"]["team"]
+        t_abbr = p["team_row"]["abbr"]
         
         t_games = official_schedule[(official_schedule["home_team"] == t_abbr) | (official_schedule["away_team"] == t_abbr)]
-        w_game = t_games[t_games["week"] == kp_week]
+        w_game = t_games[t_games["week"] == eval_week_player]
         
         if not w_game.empty:
             g = w_game.iloc[0]
@@ -441,41 +459,44 @@ if default_kp_roster and not official_schedule.empty:
             opp_def = int(float(opp_row.get("Def", 16)))
             
             if opp_def >= 23:
-                rec = "🟢 Start (Elite Matchup)"
+                rating = "🔥 Highly Favorable (Elite Matchup)"
             elif opp_def <= 10:
-                rec = "🔴 Sit / Caution (Tough Matchup)"
+                rating = "❄️ Unfavorable (Tough Matchup)"
             else:
-                rec = "🟡 Neutral Matchup"
+                rating = "⚡ Neutral Matchup"
             
-            roster_evals.append({
-                "Team": t_name,
+            player_evals.append({
+                "Player": p["name"],
+                "Team": t_abbr,
                 "Opponent": f"{opp_name} ({'Home' if is_h else 'Away'})",
-                "Opponent Def Rank": f"#{opp_def}",
-                "Matchup Verdict": rec
+                "Opp. Def Rank": f"#{opp_def}",
+                "Success Rating": rating
             })
         else:
-            roster_evals.append({
-                "Team": t_name,
+            player_evals.append({
+                "Player": p["name"],
+                "Team": t_abbr,
                 "Opponent": "Bye Week",
-                "Opponent Def Rank": "N/A",
-                "Matchup Verdict": "💤 Bench / Bye"
+                "Opp. Def Rank": "N/A",
+                "Success Rating": "💤 Bye Week (Bench)"
             })
-    
-    if roster_evals:
-        st.dataframe(pd.DataFrame(roster_evals), use_container_width=True, hide_index=True)
+            
+    if player_evals:
+        st.dataframe(pd.DataFrame(player_evals), use_container_width=True, hide_index=True)
 
-# Render Waiver Wire Scanner
 if not official_schedule.empty:
-    st.markdown(f"#### ⚡ Week {kp_week} Recommended Waiver Targets (Unrostered Teams)")
+    st.markdown(f"#### ⚡ Week {eval_week_player} Top Waiver Wire Targets (Favorable Matchup Swaps)")
     wire_evals = []
+    roster_team_abbrs = [p["team_row"]["abbr"] for p in parsed_players]
+    
     for _, t_row in df_teams.iterrows():
         t_name = t_row["team"]
-        if t_name in default_kp_roster:
-            continue
-        
         t_abbr = t_row["abbr"]
+        if t_abbr in roster_team_abbrs:
+            continue
+            
         t_games = official_schedule[(official_schedule["home_team"] == t_abbr) | (official_schedule["away_team"] == t_abbr)]
-        w_game = t_games[t_games["week"] == kp_week]
+        w_game = t_games[t_games["week"] == eval_week_player]
         
         if not w_game.empty:
             g = w_game.iloc[0]
@@ -486,14 +507,14 @@ if not official_schedule.empty:
             
             if opp_def >= 23:
                 wire_evals.append({
-                    "Available Team": t_name,
+                    "Available Team Offense": t_name,
                     "Matchup": f"vs. {opp_row.get('team', opp_a)} ({'Home' if is_h else 'Away'})",
-                    "Opponent Def Rank": f"#{opp_def}",
-                    "Waiver Priority": "🔥 High Upside Target"
+                    "Opp. Def Rank": f"#{opp_def}",
+                    "Waiver Success Rating": "🔥 High Upside Swap Target"
                 })
-    
+                
     if wire_evals:
-        w_df = pd.DataFrame(wire_evals).sort_values(by="Opponent Def Rank", ascending=False).head(5)
+        w_df = pd.DataFrame(wire_evals).sort_values(by="Opp. Def Rank", ascending=False).head(5)
         st.dataframe(w_df, use_container_width=True, hide_index=True)
     else:
         st.info("No standout waiver targets found for this week.")
