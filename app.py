@@ -63,7 +63,7 @@ def load_team_data():
     if os.path.exists(rank_file):
         try:
             rank_df = pd.read_csv(rank_file)
-            df = df.drop(columns=['Off', 'Def', 'SOS', 'Rating'], errors='ignore')
+            df = df.drop(columns=['Off', 'Def', 'TO', 'SOS', 'Rating', 'BasePlayoff'], errors='ignore')
             df = df.merge(rank_df, on="abbr", how="left")
         except Exception:
             pass
@@ -159,10 +159,10 @@ selected_abbr = team_df_row["abbr"]
 
 # Display Team Analytics & Ticket Link
 st.sidebar.markdown(f"### {st.session_state.selected_team} Profile")
-st.sidebar.metric("Offensive Rank", f"#{team_df_row['Off']}")
-st.sidebar.metric("Defensive Rank", f"#{team_df_row['Def']}")
-st.sidebar.metric("Turnover Margin", f"{team_df_row['TO']:+d}")
-st.sidebar.metric("Strength of Schedule", team_df_row["SOS"])
+st.sidebar.metric("Offensive Rank", f"#{team_df_row.get('Off', 'N/A')}")
+st.sidebar.metric("Defensive Rank", f"#{team_df_row.get('Def', 'N/A')}")
+st.sidebar.metric("Turnover Margin", f"{team_df_row.get('TO', 0):+d}")
+st.sidebar.metric("Strength of Schedule", team_df_row.get('SOS', 'N/A'))
 st.sidebar.link_button("🎟️ Get Tickets", team_df_row["ticket_link"])
 
 
@@ -216,7 +216,7 @@ trv_val = st.sidebar.slider("Travel Fatigue Multiplier", 0, 10, 0)
 
 # 10. Playoff Odds Engine
 def calculate_adjusted_playoff(row, current_abbr, inj, wea, trv):
-    base = row["BasePlayoff"]
+    base = row.get("BasePlayoff", 50.0)
     if row["abbr"] == current_abbr:
         total_penalty = (inj * 2.2) + (wea * 1.0) + (trv * 1.2)
         return round(max(1.0, min(99.0, base - total_penalty)), 1)
@@ -283,17 +283,17 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 hfa_points = 0
             else:
                 loc = "Home" if is_home else "Away"
-                venue_name = team_df_row["stadium"] if is_home else opp_info.get("stadium", "Opponent Stadium")
+                venue_name = team_df_row.get("stadium") if is_home else opp_info.get("stadium", "Opponent Stadium")
                 hfa_points = 45
                 
                 if loc == "Away":
                     travel_distance_miles = calculate_travel_distance(
-                        team_df_row["lat"], team_df_row["lon"], opp_info["lat"], opp_info["lon"]
+                        team_df_row["lat"], team_df_row["lon"], opp_info.get("lat", team_df_row["lat"]), opp_info.get("lon", team_df_row["lon"])
                     )
                 else:
                     travel_distance_miles = 0
 
-            st.markdown(f"**Opponent:** {opp_info['team']} ({loc})")
+            st.markdown(f"**Opponent:** {opp_info.get('team', opp_abbr)} ({loc})")
             st.markdown(f"🏟️ **Venue:** `{venue_name}`")
             
             if travel_distance_miles > 0:
@@ -323,8 +323,8 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                     pass
 
             if not used_ml:
-                team_base_power = team_df_row["Rating"]
-                opp_rating = opp_info["Rating"]
+                team_base_power = team_df_row.get("Rating", 1500)
+                opp_rating = opp_info.get("Rating", 1500)
 
                 inj_penalty = inj_val * 10
                 wea_penalty = wea_val * 6
@@ -337,7 +337,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 elif not is_home and not is_international:
                     rating_diff = (team_base_power - inj_penalty - wea_penalty - distance_penalty) - (opp_rating + hfa_points)
                 else:
-                    opp_travel = calculate_travel_distance(opp_info["lat"], opp_info["lon"], target_lat, target_lon)
+                    opp_travel = calculate_travel_distance(opp_info.get("lat", team_df_row["lat"]), opp_info.get("lon", team_df_row["lon"]), target_lat, target_lon)
                     opp_dist_penalty = (min(opp_travel, 3000) / 500) * 2.0 * (1 + trv_val * 0.2)
                     
                     adjusted_team = team_base_power - inj_penalty - wea_penalty - distance_penalty
@@ -363,13 +363,15 @@ m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positr
 
 for _, row in df_teams.iterrows():
     icon = folium.CustomIcon(row["logo_url"], icon_size=(35, 35))
+    
     popup_text = f"""
       <b>{row['team']}</b><br>
-      Venue: {row['stadium']}<br>
-      Surface: {row['surface']}<br>
-      Base Playoff: {row['BasePlayoff']}%<br>
-      <b>Adjusted Playoff: {row['adjusted_playoff']}%</b>
+      Venue: {row.get('stadium', 'N/A')}<br>
+      Surface: {row.get('surface', 'N/A')}<br>
+      Base Playoff: {row.get('BasePlayoff', 50.0)}%<br>
+      <b>Adjusted Playoff: {row.get('adjusted_playoff', 50.0)}%</b>
       """
+    
     folium.Marker(
         location=[row["lat"], row["lon"]],
         icon=icon,
