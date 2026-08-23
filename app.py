@@ -15,7 +15,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title(f"Official NFL Schedule, Travel & Intelligence Hub ({CURRENT_YEAR})")
+st.title(f"Official NFL Schedule, Distance Travel & Intelligence Hub ({CURRENT_YEAR})")
 st.markdown(
     "**KP League Intelligence Hub:** Automatically syncing roster data for **Seattle Axel's** "
     "and cross-referencing available waiver wire targets against real-time EPA and weather models."
@@ -367,7 +367,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             slider_penalty = (inj_val * 0.12) + (active_wea_val * 0.06) + dist_penalty
             
             adj_log_odds = base_log_odds - slider_penalty
-            win_prob = round((1.0 / (1.0 + math.math.exp(-adj_log_odds))) * 100.0, 1) if hasattr(math, 'exp') else round((1.0 / (1.0 + math.exp(-adj_log_odds))) * 100.0, 1)
+            win_prob = round((1.0 / (1.0 + math.exp(-adj_log_odds))) * 100.0, 1)
 
             st.metric(label="Adjusted Matchup Win Likelihood", value=f"{win_prob}%")
 
@@ -408,7 +408,6 @@ kp_col1, kp_col2 = st.columns([1, 1])
 
 with kp_col1:
     st.markdown("### 📋 Seattle Axel's Active Lineup Matchups")
-    # Pre-populated with typical core players/teams for Seattle Axel's in KP league
     default_kp_roster = st.multiselect(
         "Active Roster Teams", 
         team_names, 
