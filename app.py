@@ -67,7 +67,6 @@ def load_team_data():
         try:
             rank_df = pd.read_csv(rank_file)
             rank_df['abbr'] = rank_df['abbr'].replace(NFL_ABBR_MAP)
-            # Safe non-destructive update
             df = df.set_index('abbr')
             rank_df = rank_df.set_index('abbr')
             df.update(rank_df)
@@ -106,7 +105,41 @@ def load_official_schedules():
         return pd.DataFrame()
 official_schedule = load_official_schedules()
 
-# 4. Live ESPN Scoreboard
+# 4. Fetch Live Stadium Weather (Open-Meteo API)
+@st.cache_data(ttl=900)
+def get_live_stadium_weather(lat, lon, roof_type):
+    if "Dome" in str(roof_type) or "Retractable" in str(roof_type):
+        return {"temp": 72.0, "wind": 0.0, "precip": 0.0, "condition": "Controlled (Indoor)", "penalty": 0.0}
+    
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,precipitation&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch"
+        resp = requests.get(url, timeout=5)
+        data = resp.json().get('current', {})
+        
+        temp = data.get('temperature_2m', 70.0)
+        wind = data.get('wind_speed_10m', 0.0)
+        precip = data.get('precipitation', 0.0)
+        
+        # Algorithmic weather penalty for model scaling
+        penalty = 0.0
+        if temp < 32: penalty += 3.0
+        elif temp < 40: penalty += 1.0
+        
+        if wind > 20: penalty += 4.0
+        elif wind > 15: penalty += 2.0
+        
+        if precip > 0.05: penalty += 3.0
+        
+        condition = "Clear / Fair"
+        if precip > 0.05: condition = "Active Precipitation"
+        elif wind > 15: condition = "High Winds"
+        elif temp < 32: condition = "Freezing Conditions"
+        
+        return {"temp": temp, "wind": wind, "precip": precip, "condition": condition, "penalty": min(10.0, penalty)}
+    except Exception:
+        return {"temp": 70.0, "wind": 0.0, "precip": 0.0, "condition": "Data Unavailable", "penalty": 0.0}
+
+# 5. Live ESPN Scoreboard
 @st.cache_data(ttl=30)
 def get_live_game_data(team_abbr, week_num):
     espn_abbr = 'WSH' if team_abbr == 'WAS' else team_abbr
@@ -206,17 +239,17 @@ with st.sidebar.expander("🏟️ Stadium & Facility Profile", expanded=False):
     st.markdown(f"**Roof Type:** `{team_df_row.get('roof', 'N/A')}`")
     st.markdown(f"**Capacity:** `{int(team_df_row.get('capacity', 0)):,} seats`")
 
-with st.sidebar.expander("📰 Live Team Vitals & News", expanded=True):
+with st.sidebar.expander("📰 Live Team Vitals & News", expanded=False):
     news_list = team_news.get(selected_abbr, ["⚡ Practice Report: Regular depth chart active.", "🏥 Injury Status: No active designations."])
     for item in news_list:
         st.markdown(f"- {item}")
 
 # Sliding Scale Simulation Modifiers
 st.sidebar.markdown("---")
-st.sidebar.subheader("Variable Impact Controls")
+st.sidebar.subheader("Manual Forecast Controls")
 st.sidebar.markdown("**1. Injury Attrition Severity (0-10):**\n> *Depth chart erosion.*")
 inj_val = st.sidebar.slider("Injury Attrition", 0, 10, 0)
-st.sidebar.markdown("**2. Weather Severity (0-10):**\n> *Cold/wind/precipitation impact.*")
+st.sidebar.markdown("**2. Weather Severity (0-10):**\n> *Manual override for future unforecastable weather.*")
 wea_val = st.sidebar.slider("Weather Severity", 0, 10, 0)
 st.sidebar.markdown("**3. Travel Fatigue Multiplier (0-10):**\n> *Amplifies flight distance fatigue.*")
 trv_val = st.sidebar.slider("Travel Fatigue Multiplier", 0, 10, 0)
@@ -270,8 +303,8 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 venue_name = international_games[game_key]["stadium"]
                 dest_surface = international_games[game_key]["surface"]
                 dest_roof = international_games[game_key]["roof"]
-                target_lat, target_lon = international_games[game_key]["lat"], international_games[game_key]["lon"]
-                travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], target_lat, target_lon)
+                target_lat_weather, target_lon_weather = international_games[game_key]["lat"], international_games[game_key]["lon"]
+                travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], target_lat_weather, target_lon_weather)
                 hfa_points = 0
             else:
                 loc = "Home" if is_home else "Away"
@@ -279,7 +312,11 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 dest_surface = team_df_row.get("surface", "Unknown") if is_home else opp_info.get("surface", "Unknown")
                 dest_roof = team_df_row.get("roof", "Unknown") if is_home else opp_info.get("roof", "Unknown")
                 hfa_points = 45
-                travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], opp_info.get("lat", team_df_row["lat"]), opp_info.get("lon", team_df_row["lon"])) if loc == "Away" else 0
+                
+                target_lat_weather = team_df_row["lat"] if is_home else opp_info.get("lat", team_df_row["lat"])
+                target_lon_weather = team_df_row["lon"] if is_home else opp_info.get("lon", team_df_row["lon"])
+                
+                travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], target_lat_weather, target_lon_weather) if loc == "Away" else 0
             
             away_team_name = team_df_row['team'] if not is_home else opp_name
             away_usual_surface = team_df_row.get('surface', 'Unknown') if not is_home else opp_info.get('surface', 'Unknown')
@@ -289,12 +326,18 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             st.markdown(f"🏟️ **Venue:** `{venue_name}`")
             st.markdown(f"🌱 **Field Surface:** `{dest_surface}`")
             st.markdown(f"✈️ **Flight Distance:** `{travel_distance_miles:,.1f} miles`" if travel_distance_miles > 0 else "🏠 **No Travel Required**")
+            
+            # Retrieve Live Weather from Open-Meteo
+            live_weather = get_live_stadium_weather(target_lat_weather, target_lon_weather, dest_roof)
+            st.markdown(f"🌤️ **Live Stadium Weather:** `{live_weather['temp']}°F | {live_weather['wind']} mph wind | {live_weather['condition']}`")
                 
             if away_usual_surface != dest_surface and "Unknown" not in [away_usual_surface, dest_surface]:
                 st.caption(f"⚠️ **Surface Change:** The {away_team_name} normally play on {away_usual_surface}, but this game is on {dest_surface}.")
             
             if any(term in away_usual_roof for term in ["Dome", "Retractable"]) and "Open" in dest_roof:
                 st.caption(f"❄️ **Weather Exposure:** The {away_team_name} are an indoor/dome team traveling outdoors.")
+
+            apply_live_weather = st.checkbox("Inject live weather penalty into odds", value=False, help="Overrides manual weather slider and feeds the real-time API penalty directly into the log-odds.")
 
             # Model Baseline Odds Calculation
             ml_file = "weekly_predictions.csv"
@@ -322,13 +365,13 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 raw_base_prob = 1.0 / (10.0 ** (-diff / 400.0) + 1.0)
                 st.caption("🧮 *Baseline odds: Elo Zero-Sum Engine*")
 
-            # Apply Sliders Dynamically in Log-Odds Space (Preserves Math Rigor)
+            # Apply Sliders/API Dynamically in Log-Odds Space (Preserves Math Rigor)
             raw_base_prob = max(0.01, min(0.99, raw_base_prob))
             base_log_odds = math.log(raw_base_prob / (1.0 - raw_base_prob))
             
-            # Slider penalties
+            active_wea_val = live_weather['penalty'] if apply_live_weather else wea_val
             dist_penalty = (min(travel_distance_miles, 3000) / 500.0) * 0.08 * (1.0 + trv_val * 0.15) if travel_distance_miles > 0 else 0.0
-            slider_penalty = (inj_val * 0.12) + (wea_val * 0.06) + dist_penalty
+            slider_penalty = (inj_val * 0.12) + (active_wea_val * 0.06) + dist_penalty
             
             adj_log_odds = base_log_odds - slider_penalty
             win_prob = round((1.0 / (1.0 + math.exp(-adj_log_odds))) * 100.0, 1)
