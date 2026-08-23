@@ -33,7 +33,7 @@ def load_team_data():
         {"team": "Cleveland Browns", "abbr": "CLE", "lat": 41.5061, "lon": -81.6995, "stadium": "Huntington Bank Field", "surface": "Kentucky Bluegrass", "roof": "Open / Outdoor", "capacity": 67431, "Off": 22, "Def": 4, "SOS": ".536", "TO": -4, "BasePlayoff": 48.0, "Rating": 1530},
         {"team": "Dallas Cowboys", "abbr": "DAL", "lat": 32.7473, "lon": -97.0945, "stadium": "AT&T Stadium", "surface": "Matrix Helix Turf", "roof": "Retractable Roof", "capacity": 80000, "Off": 5, "Def": 11, "SOS": ".522", "TO": +4, "BasePlayoff": 72.0, "Rating": 1590},
         {"team": "Denver Broncos", "abbr": "DEN", "lat": 39.7439, "lon": -105.0201, "stadium": "Empower Field at Mile High", "surface": "Kentucky Bluegrass", "roof": "Open / Outdoor", "capacity": 76125, "Off": 24, "Def": 15, "SOS": ".502", "TO": -1, "BasePlayoff": 35.0, "Rating": 1505},
-        {"team": "Detroit Lions", "abbr": "DET", "lat": 42.3400, "lon": -83.0456, "stadium": "Ford Field", "surface": "FieldTurf CORE", "roof": "Fixed Dome", "capacity": 65000, "Off": 1, "Def": 10, "SOS": ".516", "TO": +6, "BasePlayoff": 75.0, "Rating": 1600},
+        {"team": "Detroit Lions", "abbr": "DET", "lat": 42.3400, "lon": -83.0456, "stadium": "Ford Field", "surface": "FieldTurf CORE", "roof": "Fixed Dome", "capacity": 65000, "Off": 1, "Def": 10, "SOS": ".510", "TO": +6, "BasePlayoff": 75.0, "Rating": 1600},
         {"team": "Green Bay Packers", "abbr": "GB", "lat": 44.5013, "lon": -88.0622, "stadium": "Lambeau Field", "surface": "SISGrass Hybrid", "roof": "Open / Outdoor", "capacity": 81441, "Off": 8, "Def": 13, "SOS": ".533", "TO": +3, "BasePlayoff": 70.0, "Rating": 1585},
         {"team": "Houston Texans", "abbr": "HOU", "lat": 29.6847, "lon": -95.4107, "stadium": "NRG Stadium", "surface": "Matrix Turf", "roof": "Retractable Roof", "capacity": 72220, "Off": 9, "Def": 9, "SOS": ".481", "TO": +5, "BasePlayoff": 65.0, "Rating": 1575},
         {"team": "Indianapolis Colts", "abbr": "IND", "lat": 39.7601, "lon": -86.1639, "stadium": "Lucas Oil Stadium", "surface": "Shaw Sports Turf", "roof": "Retractable Roof", "capacity": 67000, "Off": 17, "Def": 21, "SOS": ".457", "TO": -1, "BasePlayoff": 42.0, "Rating": 1515},
@@ -67,12 +67,8 @@ def load_team_data():
         except Exception:
             pass
 
-    df["logo_url"] = df["abbr"].apply(
-        lambda x: f"https://a.espncdn.com/i/teamlogos/nfl/500/{x.lower()}.png"
-    )
-    df["ticket_link"] = df["team"].apply(
-        lambda x: f"https://www.ticketmaster.com/search?q={x.replace(' ', '+')}+tickets"
-    )
+    df["logo_url"] = df["abbr"].apply(lambda x: f"https://a.espncdn.com/i/teamlogos/nfl/500/{x.lower()}.png")
+    df["ticket_link"] = df["team"].apply(lambda x: f"https://www.ticketmaster.com/search?q={x.replace(' ', '+')}+tickets")
     return df
 
 df_teams = load_team_data()
@@ -156,6 +152,16 @@ def get_live_game_data(team_abbr, week_num, year=2026):
     except Exception:
         pass
     return None
+
+# Failsafe Progress Bar Converter (Prevents UI Crashing on NaN or > 100 values)
+def safe_progress_val(probability):
+    try:
+        val = float(probability) / 100.0
+        if math.isnan(val):
+            return 0.5
+        return max(0.0, min(1.0, val))
+    except Exception:
+        return 0.5
 
 # 5. Haversine Distance Calculator
 def calculate_travel_distance(lat1, lon1, lat2, lon2):
@@ -244,7 +250,12 @@ trv_val = st.sidebar.slider("Travel Fatigue Multiplier", 0, 10, 0)
 
 # Playoff Odds Engine
 def calculate_adjusted_playoff(row, current_abbr, inj, wea, trv):
-    base = float(row.get("BasePlayoff", 50.0))
+    try:
+        base = float(row.get("BasePlayoff", 50.0))
+        if pd.isna(base): base = 50.0
+    except Exception:
+        base = 50.0
+        
     if row["abbr"] == current_abbr:
         return round(max(1.0, min(99.0, base - ((inj * 2.2) + (wea * 1.0) + (trv * 1.2)))), 1)
     return base
@@ -352,9 +363,16 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                         st.caption("🤖 *Pre-game odds powered by automated ML model*")
                 except Exception:
                     pass
+            
             if not used_ml:
-                team_base_power = float(team_df_row.get("Rating", 1500))
-                opp_rating = float(opp_info.get("Rating", 1500))
+                try:
+                    team_base_power = float(team_df_row.get("Rating", 1500))
+                    if pd.isna(team_base_power): team_base_power = 1500
+                    opp_rating = float(opp_info.get("Rating", 1500))
+                    if pd.isna(opp_rating): opp_rating = 1500
+                except Exception:
+                    team_base_power, opp_rating = 1500, 1500
+                
                 inj_penalty = inj_val * 10
                 wea_penalty = wea_val * 6
                 capped_dist = min(travel_distance_miles, 3000) if is_international else travel_distance_miles
@@ -390,7 +408,7 @@ if live_data and live_data['status'] == 'in':
     
     current_wp = live_data['wp'] if live_data['wp'] is not None else win_prob
     st.sidebar.metric(label="In-Game Live Win Probability", value=f"{current_wp}%")
-    st.sidebar.progress(current_wp / 100.0)
+    st.sidebar.progress(safe_progress_val(current_wp))
     
     if live_data.get('possession'):
         st.sidebar.caption(f"Last Play: {live_data['possession']}")
@@ -405,7 +423,7 @@ else:
     # Pre-game / Scheduled Matchup Mode
     st.sidebar.info(f"⏳ **Upcoming Matchup:** vs. {opp_name}")
     st.sidebar.metric(label="Projected Pre-Game Win Likelihood", value=f"{win_prob}%")
-    st.sidebar.progress(win_prob / 100.0)
+    st.sidebar.progress(safe_progress_val(win_prob))
     st.sidebar.caption("⚡ *Live play-by-play and in-game win probability will stream here automatically at kickoff.*")
 
 # 13. Model Performance Dashboard
