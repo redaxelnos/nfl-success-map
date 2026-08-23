@@ -7,7 +7,6 @@ import nfl_data_py as nfl
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
-from yfpy.query import YahooFantasySportsQuery
 
 CURRENT_YEAR = datetime.datetime.now().year
 KP_LEAGUE_ID = "859017"
@@ -19,8 +18,8 @@ st.set_page_config(
 
 st.title(f"Official NFL Schedule, Travel & Intelligence Hub ({CURRENT_YEAR})")
 st.markdown(
-    f"**KP League (ID# {KP_LEAGUE_ID}) — Seattle Axel's Live Hub:** Directly syncing active roster "
-    "data via Yahoo Fantasy API, cross-referenced with zero-leakage machine learning EPA and live weather."
+    f"**KP League (ID# {KP_LEAGUE_ID}) — Seattle Axel's Success Hub:** Player success ratings "
+    "powered by zero-leakage machine learning EPA, live stadium weather penalties, and opponent defensive vulnerabilities."
 )
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
@@ -85,7 +84,7 @@ def load_team_data():
 df_teams = load_team_data()
 team_dict = df_teams.set_index("abbr").to_dict("index")
 
-# 2. Team News / Vitals Feed (Restored)
+# 2. Team News / Vitals Feed
 @st.cache_data
 def load_team_news():
     return {
@@ -96,54 +95,7 @@ def load_team_news():
     }
 team_news = load_team_news()
 
-# 3. Secure Live KP League API Connection via st.secrets
-@st.cache_data(ttl=300)
-def fetch_yahoo_roster():
-    try:
-        if "yahoo" not in st.secrets:
-            return None
-            
-        token_dict = {
-            "access_token": st.secrets["yahoo"]["access_token"],
-            "consumer_key": st.secrets["yahoo"]["consumer_key"],
-            "consumer_secret": st.secrets["yahoo"]["consumer_secret"],
-            "guid": st.secrets["yahoo"]["guid"],
-            "refresh_token": st.secrets["yahoo"]["refresh_token"],
-            "token_time": float(st.secrets["yahoo"]["token_time"]),
-            "token_type": st.secrets["yahoo"]["token_type"]
-        }
-        
-        yahoo_query = YahooFantasySportsQuery(
-            league_id=KP_LEAGUE_ID,
-            game_code='nfl',
-            yahoo_access_token_json=token_dict,
-            offline=False
-        )
-        
-        teams = yahoo_query.get_league_teams()
-        seattle_team_key = None
-        for t in teams:
-            if "Seattle Axel" in getattr(t, 'name', ''):
-                seattle_team_key = t.team_key
-                break
-        if not seattle_team_key and teams:
-            seattle_team_key = teams[0].team_key
-            
-        roster_data = yahoo_query.get_team_roster(seattle_team_key)
-        players = []
-        for p in roster_data:
-            players.append({
-                "name": getattr(p, 'name', {}).get('full', 'Unknown'),
-                "position": getattr(p, 'selected_position', {}).get('position', 'BENCH'),
-                "team": getattr(p, 'editorial_team_abbr', 'FA')
-            })
-        return players
-    except Exception:
-        return None
-
-live_roster = fetch_yahoo_roster()
-
-# 4. Fetch Official Schedules
+# 3. Fetch Official Schedules
 @st.cache_data
 def load_official_schedules():
     try:
@@ -156,7 +108,7 @@ def load_official_schedules():
         return pd.DataFrame()
 official_schedule = load_official_schedules()
 
-# 5. Fetch Live Stadium Weather (Open-Meteo API)
+# 4. Fetch Live Stadium Weather (Open-Meteo API)
 @st.cache_data(ttl=900)
 def get_live_stadium_weather(lat, lon, roof_type):
     if "Dome" in str(roof_type) or "Retractable" in str(roof_type):
@@ -187,7 +139,7 @@ def get_live_stadium_weather(lat, lon, roof_type):
     except Exception:
         return {"temp": 70.0, "wind": 0.0, "precip": 0.0, "condition": "Data Unavailable", "penalty": 0.0}
 
-# 6. Live ESPN Scoreboard
+# 5. Live ESPN Scoreboard
 @st.cache_data(ttl=30)
 def get_live_game_data(team_abbr, week_num):
     espn_abbr = 'WSH' if team_abbr == 'WAS' else team_abbr
@@ -451,56 +403,121 @@ else:
     st.sidebar.progress(safe_progress_val(win_prob))
     st.sidebar.caption("⚡ *Live play-by-play and win probability will stream here automatically at kickoff.*")
 
-# --- KP LEAGUE (#859017): REAL-TIME YAHOO ROSTER & SUCCESS RATINGS ---
+# --- KP LEAGUE (#859017): INSTANT PLAYER SUCCESS RATINGS & WAIVER HUB ---
 st.markdown("---")
-st.subheader(f"🏆 KP League (ID# {KP_LEAGUE_ID}): Seattle Axel's Live Roster Success Matrix")
+st.subheader(f"🏆 KP League (ID# {KP_LEAGUE_ID}): Seattle Axel's Player Success Matrix")
+st.markdown("Enter your exact roster below to evaluate your players instantly against zero-leakage defensive EPA and opponent vulnerabilities.")
 
-eval_week_player = st.selectbox("Select Evaluation Week", range(1, 19), index=0, key="player_eval_week")
+p_col1, p_col2 = st.columns([1, 1])
 
-if live_roster:
-    st.success("Successfully synced live roster for Seattle Axel's from KP League (#859017)!")
-    player_evals = []
-    for p in live_roster:
-        t_str = p["team"].upper()
+with p_col1:
+    st.markdown("### 📋 Seattle Axel's Roster Players")
+    eval_week_player = st.selectbox("Select Evaluation Week", range(1, 19), index=0, key="player_eval_week")
+    
+    player_input_names = st.text_area(
+        "Enter Your Players (Format: Player Name - Team Abbreviation)",
+        value="",
+        placeholder="e.g.,\nPatrick Mahomes - KC\nTyreek Hill - MIA\nBreece Hall - NYJ",
+        help="Type or paste your actual roster. Each player on a new line with their NFL team abbreviation."
+    )
+
+with p_col2:
+    st.markdown("### 💡 Waiver Wire / Free Agent Swap Finder")
+    st.markdown("Scan unrostered teams facing bottom-tier defenses (Def Rank #23–#32) for high-upside pickups.")
+    waiver_pos_filter = st.selectbox("Waiver Strategy", ["Show All Favorable Matchups", "Top 5 Elite Targets Only"], key="waiver_strat")
+
+parsed_players = []
+for line in player_input_names.split("\n"):
+    if "-" in line:
+        parts = line.split("-")
+        name = parts[0].strip()
+        t_str = parts[1].strip().upper()
         matched_row = df_teams[(df_teams["abbr"] == t_str) | (df_teams["team"].str.upper().str.contains(t_str))]
-        
         if not matched_row.empty:
-            t_row = matched_row.iloc[0]
-            t_abbr = t_row["abbr"]
-            t_games = official_schedule[(official_schedule["home_team"] == t_abbr) | (official_schedule["away_team"] == t_abbr)]
-            w_game = t_games[t_games["week"] == eval_week_player]
+            parsed_players.append({"name": name, "team_row": matched_row.iloc[0]})
+
+if parsed_players and not official_schedule.empty:
+    st.markdown(f"#### 📊 Week {eval_week_player} Success Ratings (Seattle Axel's)")
+    player_evals = []
+    
+    for p in parsed_players:
+        t_name = p["team_row"]["team"]
+        t_abbr = p["team_row"]["abbr"]
+        
+        t_games = official_schedule[(official_schedule["home_team"] == t_abbr) | (official_schedule["away_team"] == t_abbr)]
+        w_game = t_games[t_games["week"] == eval_week_player]
+        
+        if not w_game.empty:
+            g = w_game.iloc[0]
+            is_h = (g["home_team"] == t_abbr)
+            opp_a = g["away_team"] if is_h else g["home_team"]
+            opp_row = team_dict.get(opp_a, {})
+            opp_name = opp_row.get("team", opp_a)
+            opp_def = int(float(opp_row.get("Def", 16)))
             
-            if not w_game.empty:
-                g = w_game.iloc[0]
-                is_h = (g["home_team"] == t_abbr)
-                opp_a = g["away_team"] if is_h else g["home_team"]
-                opp_row = team_dict.get(opp_a, {})
-                opp_name = opp_row.get("team", opp_a)
-                opp_def = int(float(opp_row.get("Def", 16)))
-                
-                if opp_def >= 23:
-                    rating = "🔥 Highly Favorable (Elite Matchup)"
-                elif opp_def <= 10:
-                    rating = "❄️ Unfavorable (Tough Matchup)"
-                else:
-                    rating = "⚡ Neutral Matchup"
-                
-                player_evals.append({
-                    "Player": p["name"],
-                    "Position": p["position"],
-                    "Team": t_abbr,
-                    "Opponent": f"{opp_name} ({'Home' if is_h else 'Away'})",
-                    "Opp. Def Rank": f"#{opp_def}",
-                    "Success Rating": rating
-                })
+            if opp_def >= 23:
+                rating = "🔥 Highly Favorable (Elite Matchup)"
+            elif opp_def <= 10:
+                rating = "❄️ Unfavorable (Tough Matchup)"
+            else:
+                rating = "⚡ Neutral Matchup"
+            
+            player_evals.append({
+                "Player": p["name"],
+                "Team": t_abbr,
+                "Opponent": f"{opp_name} ({'Home' if is_h else 'Away'})",
+                "Opp. Def Rank": f"#{opp_def}",
+                "Success Rating": rating
+            })
+        else:
+            player_evals.append({
+                "Player": p["name"],
+                "Team": t_abbr,
+                "Opponent": "Bye Week",
+                "Opp. Def Rank": "N/A",
+                "Success Rating": "💤 Bye Week (Bench)"
+            })
+            
     if player_evals:
         st.dataframe(pd.DataFrame(player_evals), use_container_width=True, hide_index=True)
-else:
-    st.info(
-        "📡 **Waiting for API Authentication:** To sync live data from KP League (#859017), "
-        "add your Yahoo token secrets to your Streamlit Cloud app settings (or local `.streamlit/secrets.toml`). "
-        "Once configured, your roster will stream here automatically without any login loops."
-    )
+
+if not official_schedule.empty:
+    st.markdown(f"#### ⚡ Week {eval_week_player} Top Waiver Wire Targets (Favorable Matchup Swaps)")
+    wire_evals = []
+    roster_team_abbrs = [p["team_row"]["abbr"] for p in parsed_players]
+    
+    for _, t_row in df_teams.iterrows():
+        t_name = t_row["team"]
+        t_abbr = t_row["abbr"]
+        if t_abbr in roster_team_abbrs:
+            continue
+            
+        t_games = official_schedule[(official_schedule["home_team"] == t_abbr) | (official_schedule["away_team"] == t_abbr)]
+        w_game = t_games[t_games["week"] == eval_week_player]
+        
+        if not w_game.empty:
+            g = w_game.iloc[0]
+            is_h = (g["home_team"] == t_abbr)
+            opp_a = g["away_team"] if is_h else g["home_team"]
+            opp_row = team_dict.get(opp_a, {})
+            opp_def = int(float(opp_row.get("Def", 16)))
+            
+            if waiver_pos_filter == "Top 5 Elite Targets Only" and opp_def < 27:
+                continue
+                
+            if opp_def >= 23:
+                wire_evals.append({
+                    "Available Team Offense": t_name,
+                    "Matchup": f"vs. {opp_row.get('team', opp_a)} ({'Home' if is_h else 'Away'})",
+                    "Opp. Def Rank": f"#{opp_def}",
+                    "Waiver Success Rating": "🔥 High Upside Swap Target"
+                })
+                
+    if wire_evals:
+        w_df = pd.DataFrame(wire_evals).sort_values(by="Opp. Def Rank", ascending=False).head(5)
+        st.dataframe(w_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No standout waiver targets found matching this filter for the selected week.")
 
 # 13. Model Performance & Pipeline Freshness Header
 st.markdown("---")
