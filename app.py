@@ -69,7 +69,6 @@ def load_team_data():
         try:
             rank_df = pd.read_csv(rank_file)
             rank_df['abbr'] = rank_df['abbr'].replace(NFL_ABBR_MAP)
-            # Safe merge prevents index KeyError issues
             df = df.merge(rank_df, on='abbr', how='left', suffixes=('', '_rank'))
             for col in df.columns:
                 if col.endswith('_rank'):
@@ -86,7 +85,18 @@ def load_team_data():
 df_teams = load_team_data()
 team_dict = df_teams.set_index("abbr").to_dict("index")
 
-# 2. Secure Live KP League API Connection via st.secrets
+# 2. Team News / Vitals Feed (Restored)
+@st.cache_data
+def load_team_news():
+    return {
+        "KC": ["⚡ Practice Report: Full starter participation.", "🏥 Injury Update: Backup TE minor ankle soreness."],
+        "SF": ["⚡ Roster Alert: Elevated practice squad DL.", "🏥 Injury Update: RB limited in practice."],
+        "BAL": ["⚡ Coaching Note: Red-zone execution priority.", "🏥 Injury Update: LB cleared for contact."],
+        "BUF": ["⚡ Weather Advisory: High winds expected.", "🏥 Injury Update: Extra secondary depth reps."]
+    }
+team_news = load_team_news()
+
+# 3. Secure Live KP League API Connection via st.secrets
 @st.cache_data(ttl=300)
 def fetch_yahoo_roster():
     try:
@@ -133,7 +143,7 @@ def fetch_yahoo_roster():
 
 live_roster = fetch_yahoo_roster()
 
-# 3. Fetch Official Schedules
+# 4. Fetch Official Schedules
 @st.cache_data
 def load_official_schedules():
     try:
@@ -146,7 +156,7 @@ def load_official_schedules():
         return pd.DataFrame()
 official_schedule = load_official_schedules()
 
-# 4. Fetch Live Stadium Weather (Open-Meteo API)
+# 5. Fetch Live Stadium Weather (Open-Meteo API)
 @st.cache_data(ttl=900)
 def get_live_stadium_weather(lat, lon, roof_type):
     if "Dome" in str(roof_type) or "Retractable" in str(roof_type):
@@ -177,7 +187,7 @@ def get_live_stadium_weather(lat, lon, roof_type):
     except Exception:
         return {"temp": 70.0, "wind": 0.0, "precip": 0.0, "condition": "Data Unavailable", "penalty": 0.0}
 
-# 5. Live ESPN Scoreboard
+# 6. Live ESPN Scoreboard
 @st.cache_data(ttl=30)
 def get_live_game_data(team_abbr, week_num):
     espn_abbr = 'WSH' if team_abbr == 'WAS' else team_abbr
