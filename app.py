@@ -20,6 +20,9 @@ st.markdown(
     "interactive what-if simulation sliders."
 )
 
+# Shared mapping to standardize abbreviations from the NFL python library
+NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
+
 # 1. Complete 32-Team Dataset with Official Baseline SOS & Dynamic Integration
 def load_team_data():
     data = [
@@ -62,6 +65,7 @@ def load_team_data():
     if os.path.exists(rank_file):
         try:
             rank_df = pd.read_csv(rank_file)
+            rank_df['abbr'] = rank_df['abbr'].replace(NFL_ABBR_MAP) # Clean library mismatches
             df = df.drop(columns=['Off', 'Def', 'TO', 'SOS', 'Rating', 'BasePlayoff'], errors='ignore')
             df = df.merge(rank_df, on="abbr", how="left")
         except Exception:
@@ -102,7 +106,10 @@ team_news = load_team_news()
 def load_official_schedules():
     try:
         sched_df = nfl.import_schedules([2026])
-        return sched_df[sched_df["game_type"] == "REG"]
+        reg_df = sched_df[sched_df["game_type"] == "REG"].copy()
+        reg_df['home_team'] = reg_df['home_team'].replace(NFL_ABBR_MAP) # Clean schedule abbreviations
+        reg_df['away_team'] = reg_df['away_team'].replace(NFL_ABBR_MAP)
+        return reg_df
     except Exception:
         return pd.DataFrame()
 official_schedule = load_official_schedules()
@@ -153,7 +160,7 @@ def get_live_game_data(team_abbr, week_num, year=2026):
         pass
     return None
 
-# Failsafe Progress Bar Converter (Prevents UI Crashing on NaN or > 100 values)
+# Failsafe Progress Bar Converter
 def safe_progress_val(probability):
     try:
         val = float(probability) / 100.0
@@ -188,7 +195,7 @@ if selected_name != st.session_state.selected_team:
 team_df_row = df_teams[df_teams["team"] == st.session_state.selected_team].iloc[0]
 selected_abbr = team_df_row["abbr"]
 
-# Safe metric parsing
+# Safe metric parsing with complete fallback
 try:
     to_display = f"{int(float(team_df_row.get('TO', 0))):+d}"
     off_rank = f"#{int(float(team_df_row.get('Off', 1)))}"
@@ -196,11 +203,14 @@ try:
 except Exception:
     to_display, off_rank, def_rank = "0", "N/A", "N/A"
 
+sos_val = team_df_row.get("SOS", ".500")
+sos_display = "N/A" if pd.isna(sos_val) or str(sos_val).lower() == "nan" else str(sos_val)
+
 st.sidebar.markdown(f"### {st.session_state.selected_team} Profile")
 st.sidebar.metric("Offensive Rank", off_rank)
 st.sidebar.metric("Defensive Rank", def_rank)
 st.sidebar.metric("Turnover Margin", to_display)
-st.sidebar.metric("Strength of Schedule", str(team_df_row.get("SOS", ".500")))
+st.sidebar.metric("Strength of Schedule", sos_display)
 st.sidebar.link_button("🎟️ Get Tickets", team_df_row["ticket_link"])
 
 # 7. Stadium & Facility Details Drawer
@@ -282,14 +292,8 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             away_abbr = game["away_team"]
             is_home = (home_abbr == selected_abbr)
             opp_abbr = away_abbr if is_home else home_abbr
-            
-            # Map old abbreviations to match dict
-            abbr_mapping = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
-            clean_home = abbr_mapping.get(home_abbr, home_abbr)
-            clean_away = abbr_mapping.get(away_abbr, away_abbr)
-            clean_opp_abbr = abbr_mapping.get(opp_abbr, opp_abbr)
 
-            opp_info = team_dict.get(clean_opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "surface": "Unknown", "roof": "Unknown", "Rating": 1500})
+            opp_info = team_dict.get(opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "surface": "Unknown", "roof": "Unknown", "Rating": 1500})
             opp_name = opp_info.get("team", opp_abbr)
             
             # --- 🌍 INTERNATIONAL GAMES OVERRIDE ---
@@ -299,7 +303,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 (10, "DET", "NE"): {"stadium": "Allianz Arena (Germany)", "lat": 48.2188, "lon": 11.6247, "surface": "Natural Grass", "roof": "Open / Outdoor"}
             }
             
-            game_key = (selected_week, clean_home, clean_away)
+            game_key = (selected_week, home_abbr, away_abbr)
             is_international = game_key in international_games
             
             if is_international:
@@ -356,7 +360,10 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             if os.path.exists(ml_file):
                 try:
                     ml_df = pd.read_csv(ml_file)
-                    game_match = ml_df[(ml_df["week"] == selected_week) & ((ml_df["home_team"] == clean_opp_abbr) | (ml_df["away_team"] == clean_opp_abbr))]
+                    ml_df['home_team'] = ml_df['home_team'].replace(NFL_ABBR_MAP) # Clean predictions
+                    ml_df['away_team'] = ml_df['away_team'].replace(NFL_ABBR_MAP)
+                    
+                    game_match = ml_df[(ml_df["week"] == selected_week) & ((ml_df["home_team"] == opp_abbr) | (ml_df["away_team"] == opp_abbr))]
                     if not game_match.empty:
                         win_prob = round(game_match.iloc[0]["home_win_prob" if is_home else "away_win_prob"] * 100, 1)
                         used_ml = True
