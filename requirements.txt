@@ -1,7 +1,7 @@
-nfl_data_py==0.3.3
-pandas
-scikit-learn
-numpy
 streamlit
+pandas
+nfl_data_py
+requests
 folium
 streamlit-folium
+yfpy
