@@ -97,14 +97,12 @@ def load_official_schedules():
         return pd.DataFrame()
 official_schedule = load_official_schedules()
 
-# 4. Fetch LIVE ESPN Data (Cached for 30 seconds to prevent rate limiting)
+# 4. Fetch Live ESPN Scoreboard Data for the SPECIFIC Week
 @st.cache_data(ttl=30)
-def get_live_game_data(team_abbr):
-    # Map abbreviation for ESPN (WAS is WSH in ESPN's system)
+def get_live_game_data(team_abbr, week_num, year=2026):
     espn_abbr = 'WSH' if team_abbr == 'WAS' else team_abbr
-        
     try:
-        url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={year}&seasontype=2&week={week_num}"
         resp = requests.get(url, timeout=5)
         data = resp.json()
         
@@ -133,17 +131,12 @@ def get_live_game_data(team_abbr):
                 
                 if status == 'in':
                     situation = competition.get('situation', {})
-                    game_info['possession'] = situation.get('lastPlay', {}).get('text', 'Play in progress...')
-                    
+                    game_info['possession'] = situation.get('lastPlay', {}).get('text', 'Live in action')
                     prob = situation.get('lastPlay', {}).get('probability', {})
                     if prob:
                         home_wp = prob.get('homeWinPercentage', 0.5)
                         away_wp = prob.get('awayWinPercentage', 0.5)
-                        
-                        if espn_abbr == home_team['team']['abbreviation']:
-                            game_info['wp'] = round(home_wp * 100, 1)
-                        else:
-                            game_info['wp'] = round(away_wp * 100, 1)
+                        game_info['wp'] = round((home_wp if espn_abbr == home_team['team']['abbreviation'] else away_wp) * 100, 1)
                 
                 return game_info
     except Exception:
@@ -212,7 +205,13 @@ df_teams["adjusted_playoff"] = df_teams.apply(lambda row: calculate_adjusted_pla
 current_adjusted_score = df_teams.loc[df_teams["abbr"] == selected_abbr, "adjusted_playoff"].values[0]
 st.sidebar.markdown(f"### 🎯 Adjusted Playoff Odds: {current_adjusted_score}%")
 
-with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=False):
+# Default week fallback if schedule is loading
+selected_week = 1
+win_prob = 50.0
+is_home = True
+opp_name = "Opponent"
+
+with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=True):
     if not official_schedule.empty:
         team_games = official_schedule[(official_schedule["home_team"] == selected_abbr) | (official_schedule["away_team"] == selected_abbr)]
         weeks = sorted(team_games["week"].unique().tolist())
@@ -221,8 +220,12 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Fa
             game = team_games[team_games["week"] == selected_week].iloc[0]
             is_home = (game["home_team"] == selected_abbr)
             opp_abbr = game["away_team"] if is_home else game["home_team"]
-            st.markdown(f"**Opponent:** {opp_abbr} ({'Home' if is_home else 'Away'})")
+            opp_info = team_dict.get(opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "Rating": 1500})
+            opp_name = opp_info.get("team", opp_abbr)
             
+            st.markdown(f"**Opponent:** {opp_name} ({'Home' if is_home else 'Away'})")
+            
+            # Prediction Logic
             ml_file = "weekly_predictions.csv"
             used_ml = False
             if os.path.exists(ml_file):
@@ -232,36 +235,47 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Fa
                     if not game_match.empty:
                         win_prob = round(game_match.iloc[0]["home_win_prob" if is_home else "away_win_prob"] * 100, 1)
                         used_ml = True
-                        st.caption("🤖 *Odds powered by ML model*")
+                        st.caption("🤖 *Pre-game odds powered by automated ML model*")
                 except Exception:
                     pass
             if not used_ml:
-                st.caption("🧮 *Waiting for active ML odds*")
+                diff = (float(team_df_row.get("Rating", 1500)) + (45 if is_home else -45)) - float(opp_info.get("Rating", 1500))
+                win_prob = round(1 / (10 ** (-diff / 400) + 1) * 100, 1)
+                st.caption("🧮 *Pre-game odds powered by zero-sum power rating*")
 
-# 12. Live Game Tracker
+            st.metric(label=f"Pre-Game Win Probability", value=f"{win_prob}%")
+
+# 12. Dynamic Live Game Tracker Linked to Selected Week
 st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Live Game Tracker")
+st.sidebar.subheader(f"📡 Week {selected_week} Game Tracker")
 
-live_data = get_live_game_data(selected_abbr)
+live_data = get_live_game_data(selected_abbr, selected_week, year=2026)
 
-if live_data:
+if live_data and live_data['status'] == 'in':
+    # Live during active kickoff
     st.sidebar.markdown(f"**{live_data['away_abbr']} @ {live_data['home_abbr']}**")
-    st.sidebar.markdown(f"Score: `{live_data['away_score']} - {live_data['home_score']}`")
-    st.sidebar.caption(f"Status: {live_data['clock']}")
+    st.sidebar.markdown(f"Live Score: `{live_data['away_score']} - {live_data['home_score']}`")
+    st.sidebar.caption(f"Quarter/Clock: {live_data['clock']}")
     
-    if live_data['status'] == 'in':
-        if live_data['wp'] is not None:
-            # Display large metric and dynamic visual progress bar
-            st.sidebar.metric(label="Live Win Probability", value=f"{live_data['wp']}%")
-            st.sidebar.progress(live_data['wp'] / 100.0)
-        if live_data['possession']:
-            st.sidebar.caption(f"Last Play: {live_data['possession']}")
-    elif live_data['status'] == 'pre':
-        st.sidebar.info("Game scheduled. Live odds will stream here after kickoff.")
-    elif live_data['status'] == 'post':
-        st.sidebar.success("Game Final.")
+    current_wp = live_data['wp'] if live_data['wp'] is not None else win_prob
+    st.sidebar.metric(label="In-Game Live Win Probability", value=f"{current_wp}%")
+    st.sidebar.progress(current_wp / 100.0)
+    
+    if live_data.get('possession'):
+        st.sidebar.caption(f"Last Play: {live_data['possession']}")
+
+elif live_data and live_data['status'] == 'post':
+    # Game completed
+    st.sidebar.markdown(f"**{live_data['away_abbr']} @ {live_data['home_abbr']}**")
+    st.sidebar.markdown(f"Final Score: `{live_data['away_score']} - {live_data['home_score']}`")
+    st.sidebar.success("Game Final.")
+
 else:
-    st.sidebar.info("No active game detected on the scoreboard.")
+    # Pre-game / Scheduled Matchup Mode
+    st.sidebar.info(f"⏳ **Upcoming Matchup:** vs. {opp_name}")
+    st.sidebar.metric(label="Projected Pre-Game Win Likelihood", value=f"{win_prob}%")
+    st.sidebar.progress(win_prob / 100.0)
+    st.sidebar.caption("⚡ *Live play-by-play and in-game win probability will stream here automatically at kickoff.*")
 
 # 13. Interactive Folium Map
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
