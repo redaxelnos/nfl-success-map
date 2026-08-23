@@ -25,7 +25,7 @@ st.markdown(
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 
-# 1. Team Dataset with Preserved Fallbacks and Offset Map Coordinates
+# 1. Team Dataset with Safe Merge Ranking Logic
 @st.cache_data
 def load_team_data():
     base_data = [
@@ -69,10 +69,13 @@ def load_team_data():
         try:
             rank_df = pd.read_csv(rank_file)
             rank_df['abbr'] = rank_df['abbr'].replace(NFL_ABBR_MAP)
-            df = df.set_index('abbr')
-            rank_df = rank_df.set_index('abbr')
-            df.update(rank_df)
-            df = df.reset_index()
+            # Safe merge prevents index KeyError issues
+            df = df.merge(rank_df, on='abbr', how='left', suffixes=('', '_rank'))
+            for col in df.columns:
+                if col.endswith('_rank'):
+                    orig_col = col[:-5]
+                    df[orig_col] = df[col].combine_first(df[orig_col])
+                    df.drop(columns=[col], inplace=True)
         except Exception:
             pass
 
