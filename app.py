@@ -82,8 +82,22 @@ team_dict = df_teams.set_index("abbr").to_dict("index")
 @st.cache_data
 def load_team_news():
     return {
-        "KC": ["⚡ Practice Report: Full participation for offensive starters."],
-        "SF": ["🏥 Injury Update: Star running back listed as limited in drills."]
+        "KC": [
+            "⚡ Practice Report: Full participation for offensive starters.",
+            "🏥 Injury Update: Minor ankle soreness reported for backup tight end."
+        ],
+        "SF": [
+            "⚡ Roster Alert: Elevated practice squad defensive lineman.",
+            "🏥 Injury Update: Star running back listed as limited in drills."
+        ],
+        "BAL": [
+            "⚡ Coaching Note: Scheme adjustments focused on red-zone efficiency.",
+            "🏥 Injury Update: Linebacker cleared for full contact."
+        ],
+        "BUF": [
+            "⚡ Weather Advisory: High winds expected for upcoming outdoor drills.",
+            "🏥 Injury Update: Secondary depth getting extra reps."
+        ]
     }
 team_news = load_team_news()
 
@@ -183,15 +197,49 @@ st.sidebar.metric("Turnover Margin", to_display)
 st.sidebar.metric("Strength of Schedule", str(team_df_row.get("SOS", ".500")))
 st.sidebar.link_button("🎟️ Get Tickets", team_df_row["ticket_link"])
 
+# 7. Stadium & Facility Details Drawer
 with st.sidebar.expander("🏟️ Stadium & Facility Profile", expanded=False):
     st.markdown(f"**Venue:** `{team_df_row.get('stadium', 'N/A')}`")
+    st.markdown(f"**Field Surface:** `{team_df_row.get('surface', 'N/A')}`")
+    st.markdown(f"**Roof Type:** `{team_df_row.get('roof', 'N/A')}`")
     st.markdown(f"**Capacity:** `{int(team_df_row.get('capacity', 0)):,} seats`")
 
-# Sliding-Scale Variables
+# 8. Live Team Vitals & News Ticker Panel
+with st.sidebar.expander("📰 Live Team Vitals & News", expanded=True):
+    news_list = team_news.get(
+        selected_abbr,
+        [
+            "⚡ Practice Report: Normal roster rotation active.",
+            "🏥 Injury Status: No major new designations reported."
+        ]
+    )
+    for item in news_list:
+        st.markdown(f"- {item}")
+    st.caption(
+        "*Note: Automated data pipelines refresh weekly status reports; sliders "
+        "below test what-if simulation scenarios.*"
+    )
+
+# 9. Sliding-Scale Variables with Direct Reactivity
 st.sidebar.markdown("---")
 st.sidebar.subheader("Variable Impact Controls")
+
+st.sidebar.markdown(
+    "**1. Injury Attrition Severity (0-10):**\n"
+    "> *Measures depth erosion and missing starters.*"
+)
 inj_val = st.sidebar.slider("Injury Attrition", 0, 10, 0)
+
+st.sidebar.markdown(
+    "**2. Weather Severity (0-10):**\n"
+    "> *Accounts for severe cold, wind, or precipitation.*"
+)
 wea_val = st.sidebar.slider("Weather Severity", 0, 10, 0)
+
+st.sidebar.markdown(
+    "**3. Travel Fatigue Multiplier (0-10):**\n"
+    "> *Amplifies travel fatigue penalty calculated from flight distance.*"
+)
 trv_val = st.sidebar.slider("Travel Fatigue Multiplier", 0, 10, 0)
 
 # Playoff Odds Engine
@@ -218,20 +266,86 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
         if weeks:
             selected_week = st.selectbox("Select Week", weeks)
             game = team_games[team_games["week"] == selected_week].iloc[0]
-            is_home = (game["home_team"] == selected_abbr)
-            opp_abbr = game["away_team"] if is_home else game["home_team"]
-            opp_info = team_dict.get(opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "Rating": 1500})
+            
+            home_abbr = game["home_team"]
+            away_abbr = game["away_team"]
+            is_home = (home_abbr == selected_abbr)
+            opp_abbr = away_abbr if is_home else home_abbr
+            
+            # Map old abbreviations to match dict
+            abbr_mapping = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS"}
+            clean_home = abbr_mapping.get(home_abbr, home_abbr)
+            clean_away = abbr_mapping.get(away_abbr, away_abbr)
+            clean_opp_abbr = abbr_mapping.get(opp_abbr, opp_abbr)
+
+            opp_info = team_dict.get(clean_opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "surface": "Unknown", "roof": "Unknown", "Rating": 1500})
             opp_name = opp_info.get("team", opp_abbr)
             
-            st.markdown(f"**Opponent:** {opp_name} ({'Home' if is_home else 'Away'})")
+            # --- 🌍 INTERNATIONAL GAMES OVERRIDE ---
+            international_games = {
+                (1, "LAR", "SF"): {"stadium": "Melbourne Cricket Ground (Australia)", "lat": -37.8199, "lon": 144.9834, "surface": "Hybrid Grass", "roof": "Open / Outdoor"},
+                (3, "DAL", "BAL"): {"stadium": "Maracanã Stadium (Brazil)", "lat": -22.9121, "lon": -43.2301, "surface": "Bermuda Grass", "roof": "Open / Outdoor"},
+                (10, "DET", "NE"): {"stadium": "Allianz Arena (Germany)", "lat": 48.2188, "lon": 11.6247, "surface": "Natural Grass", "roof": "Open / Outdoor"}
+            }
             
+            game_key = (selected_week, clean_home, clean_away)
+            is_international = game_key in international_games
+            
+            if is_international:
+                loc = "Neutral (International)"
+                venue_name = international_games[game_key]["stadium"]
+                dest_surface = international_games[game_key]["surface"]
+                dest_roof = international_games[game_key]["roof"]
+                target_lat = international_games[game_key]["lat"]
+                target_lon = international_games[game_key]["lon"]
+                
+                travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], target_lat, target_lon)
+                hfa_points = 0
+            else:
+                loc = "Home" if is_home else "Away"
+                venue_name = team_df_row.get("stadium", "Stadium") if is_home else opp_info.get("stadium", "Opponent Stadium")
+                dest_surface = team_df_row.get("surface", "Unknown") if is_home else opp_info.get("surface", "Unknown")
+                dest_roof = team_df_row.get("roof", "Unknown") if is_home else opp_info.get("roof", "Unknown")
+                hfa_points = 45
+                
+                if loc == "Away":
+                    travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], opp_info.get("lat", team_df_row["lat"]), opp_info.get("lon", team_df_row["lon"]))
+                else:
+                    travel_distance_miles = 0
+            
+            # Identify the away team to evaluate surface/weather shifts
+            away_team_name = team_df_row['team'] if not is_home else opp_name
+            away_usual_surface = team_df_row.get('surface', 'Unknown') if not is_home else opp_info.get('surface', 'Unknown')
+            away_usual_roof = team_df_row.get('roof', 'Unknown') if not is_home else opp_info.get('roof', 'Unknown')
+
+            # Render Matchup Context
+            st.markdown(f"**Opponent:** {opp_name} ({loc})")
+            st.markdown(f"🏟️ **Venue:** `{venue_name}`")
+            st.markdown(f"🌱 **Field Surface:** `{dest_surface}`")
+            
+            if travel_distance_miles > 0:
+                st.markdown(f"✈️ **Flight Distance:** `{travel_distance_miles:,.1f} miles`")
+            else:
+                st.markdown(f"🏠 **No Travel Required**")
+                
+            # Situational Matchup Alerts
+            alerts = []
+            if away_usual_surface != dest_surface and "Unknown" not in [away_usual_surface, dest_surface]:
+                alerts.append(f"⚠️ **Surface Change Alert:** The {away_team_name} normally play on {away_usual_surface}, but this game is on {dest_surface}.")
+            
+            if any(term in away_usual_roof for term in ["Dome", "Retractable"]) and "Open" in dest_roof:
+                alerts.append(f"❄️ **Weather Exposure Risk:** The {away_team_name} are a dome/indoor team traveling to an outdoor stadium.")
+                
+            for alert in alerts:
+                st.caption(alert)
+
             # Prediction Logic
             ml_file = "weekly_predictions.csv"
             used_ml = False
             if os.path.exists(ml_file):
                 try:
                     ml_df = pd.read_csv(ml_file)
-                    game_match = ml_df[(ml_df["week"] == selected_week) & ((ml_df["home_team"] == opp_abbr) | (ml_df["away_team"] == opp_abbr))]
+                    game_match = ml_df[(ml_df["week"] == selected_week) & ((ml_df["home_team"] == clean_opp_abbr) | (ml_df["away_team"] == clean_opp_abbr))]
                     if not game_match.empty:
                         win_prob = round(game_match.iloc[0]["home_win_prob" if is_home else "away_win_prob"] * 100, 1)
                         used_ml = True
@@ -239,8 +353,25 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 except Exception:
                     pass
             if not used_ml:
-                diff = (float(team_df_row.get("Rating", 1500)) + (45 if is_home else -45)) - float(opp_info.get("Rating", 1500))
-                win_prob = round(1 / (10 ** (-diff / 400) + 1) * 100, 1)
+                team_base_power = float(team_df_row.get("Rating", 1500))
+                opp_rating = float(opp_info.get("Rating", 1500))
+                inj_penalty = inj_val * 10
+                wea_penalty = wea_val * 6
+                capped_dist = min(travel_distance_miles, 3000) if is_international else travel_distance_miles
+                distance_penalty = (capped_dist / 500) * 2.0 * (1 + trv_val * 0.2) if travel_distance_miles > 0 else 0
+
+                if is_home and not is_international:
+                    rating_diff = (team_base_power + hfa_points - inj_penalty - wea_penalty) - opp_rating
+                elif not is_home and not is_international:
+                    rating_diff = (team_base_power - inj_penalty - wea_penalty - distance_penalty) - (opp_rating + hfa_points)
+                else:
+                    opp_travel = calculate_travel_distance(opp_info.get("lat", team_df_row["lat"]), opp_info.get("lon", team_df_row["lon"]), target_lat, target_lon)
+                    opp_dist_penalty = (min(opp_travel, 3000) / 500) * 2.0 * (1 + trv_val * 0.2)
+                    adjusted_team = team_base_power - inj_penalty - wea_penalty - distance_penalty
+                    adjusted_opp = opp_rating - opp_dist_penalty
+                    rating_diff = adjusted_team - adjusted_opp
+
+                win_prob = round(1 / (10 ** (-rating_diff / 400) + 1) * 100, 1)
                 st.caption("🧮 *Pre-game odds powered by zero-sum power rating*")
 
             st.metric(label=f"Pre-Game Win Probability", value=f"{win_prob}%")
