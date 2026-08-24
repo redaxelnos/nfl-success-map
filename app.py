@@ -9,23 +9,22 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 CURRENT_YEAR = datetime.datetime.now().year
-KP_LEAGUE_ID = "859017"
 
 st.set_page_config(
     page_title=f"NFL Matchup, Travel & Intelligence Hub ({CURRENT_YEAR})", 
     layout="wide"
 )
 
-st.title(f"Official NFL Schedule, Travel & Intelligence Hub ({CURRENT_YEAR})")
+st.title(f"Official NFL Schedule, Distance Travel & Intelligence Hub ({CURRENT_YEAR})")
 st.markdown(
-    f"**KP League (ID# {KP_LEAGUE_ID}) — Seattle Axel's Success Hub:** Player success ratings "
-    "powered by zero-leakage machine learning EPA, live stadium weather penalties, and opponent defensive vulnerabilities."
+    "**Click any team's logo on the map** or use the sidebar dropdown to inspect "
+    "official schedules, stadium facility profiles, exact travel distances, team news vitals, and "
+    "interactive simulation sliders."
 )
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 
-# 1. Team Dataset with Safe Merge Ranking Logic
-@st.cache_data
+# 1. Complete 32-Team Dataset (Updated 2026 Venues & Co-Location Map Offsets)
 def load_team_data():
     base_data = [
         {"team": "Arizona Cardinals", "abbr": "ARI", "lat": 33.5276, "lon": -112.2626, "stadium": "State Farm Stadium", "surface": "Bermuda Grass", "roof": "Retractable Roof", "capacity": 63400, "Off": 18, "Def": 22, "SOS": ".536", "TO": -2, "BasePlayoff": 32.0, "Rating": 1500},
@@ -43,7 +42,7 @@ def load_team_data():
         {"team": "Houston Texans", "abbr": "HOU", "lat": 29.6847, "lon": -95.4107, "stadium": "NRG Stadium", "surface": "Matrix Helix Turf", "roof": "Retractable Roof", "capacity": 72220, "Off": 9, "Def": 9, "SOS": ".481", "TO": +5, "BasePlayoff": 65.0, "Rating": 1575},
         {"team": "Indianapolis Colts", "abbr": "IND", "lat": 39.7601, "lon": -86.1639, "stadium": "Lucas Oil Stadium", "surface": "Shaw Sports Turf", "roof": "Retractable Roof", "capacity": 67000, "Off": 17, "Def": 21, "SOS": ".457", "TO": -1, "BasePlayoff": 42.0, "Rating": 1515},
         {"team": "Jacksonville Jaguars", "abbr": "JAX", "lat": 30.3239, "lon": -81.6373, "stadium": "EverBank Stadium", "surface": "Bermuda Grass", "roof": "Open / Outdoor", "capacity": 67814, "Off": 16, "Def": 20, "SOS": ".478", "TO": 0, "BasePlayoff": 46.0, "Rating": 1525},
-        {"team": "Kansas City Chiefs", "abbr": "KC", "lat": 39.0489, "lon": -94.4839, "stadium": "GEHA Field at Arrowhead", "surface": "Latitude 36 Bermuda", "roof": "Open / Outdoor", "capacity": 76416, "Off": 4, "Def": 2, "SOS": ".488", "TO": +8, "BasePlayoff": 92.0, "Rating": 1650},
+        {"team": "Kansas City Chiefs", "abbr": "KC", "lat": 39.0489, "lon": -94.4839, "stadium": "GEHA Field at Arrowhead", "surface": "Bermuda Grass", "roof": "Open / Outdoor", "capacity": 76416, "Off": 4, "Def": 2, "SOS": ".488", "TO": +8, "BasePlayoff": 92.0, "Rating": 1650},
         {"team": "Las Vegas Raiders", "abbr": "LV", "lat": 36.0909, "lon": -115.1833, "stadium": "Allegiant Stadium", "surface": "Bermuda Grass", "roof": "Fixed Dome", "capacity": 65000, "Off": 27, "Def": 14, "SOS": ".540", "TO": -3, "BasePlayoff": 28.0, "Rating": 1495},
         {"team": "Los Angeles Chargers", "abbr": "LAC", "lat": 33.9250, "lon": -118.2850, "stadium": "SoFi Stadium", "surface": "Matrix Helix Turf", "roof": "Fixed Translucent Canopy", "capacity": 70240, "Off": 15, "Def": 7, "SOS": ".467", "TO": +2, "BasePlayoff": 55.0, "Rating": 1550},
         {"team": "Los Angeles Rams", "abbr": "LAR", "lat": 33.9800, "lon": -118.3900, "stadium": "SoFi Stadium", "surface": "Matrix Helix Turf", "roof": "Fixed Translucent Canopy", "capacity": 70240, "Off": 7, "Def": 18, "SOS": ".505", "TO": +1, "BasePlayoff": 62.0, "Rating": 1565},
@@ -57,7 +56,7 @@ def load_team_data():
         {"team": "Pittsburgh Steelers", "abbr": "PIT", "lat": 40.4468, "lon": -80.0158, "stadium": "Acrisure Stadium", "surface": "Kentucky Bluegrass", "roof": "Open / Outdoor", "capacity": 68400, "Off": 23, "Def": 1, "SOS": ".502", "TO": +6, "BasePlayoff": 58.0, "Rating": 1555},
         {"team": "San Francisco 49ers", "abbr": "SF", "lat": 37.4033, "lon": -121.9694, "stadium": "Levi's Stadium", "surface": "Bermuda Grass", "roof": "Open / Outdoor", "capacity": 68500, "Off": 2, "Def": 5, "SOS": ".564", "TO": +7, "BasePlayoff": 85.0, "Rating": 1630},
         {"team": "Seattle Seahawks", "abbr": "SEA", "lat": 47.5952, "lon": -122.3316, "stadium": "Lumen Field", "surface": "FieldTurf CORE", "roof": "Open / Outdoor", "capacity": 68740, "Off": 12, "Def": 24, "SOS": ".498", "TO": 0, "BasePlayoff": 53.0, "Rating": 1545},
-        {"team": "Tampa Bay Buccaneers", "abbr": "TB", "lat": 27.9759, "lon": -82.5033, "stadium": "Raymond James Stadium", "surface": "Tifway 419 Bermuda", "roof": "Open / Outdoor", "capacity": 69218, "Off": 17, "Def": 22, "SOS": ".502", "TO": +2, "BasePlayoff": 47.0, "Rating": 1530},
+        {"team": "Tampa Bay Buccaneers", "abbr": "TB", "lat": 27.9759, "lon": -82.5033, "stadium": "Raymond James Stadium", "surface": "Bermuda Grass", "roof": "Open / Outdoor", "capacity": 69218, "Off": 17, "Def": 22, "SOS": ".502", "TO": +2, "BasePlayoff": 47.0, "Rating": 1530},
         {"team": "Tennessee Titans", "abbr": "TEN", "lat": 36.1665, "lon": -86.7713, "stadium": "Nissan Stadium", "surface": "Matrix Helix Turf", "roof": "Open / Outdoor", "capacity": 69143, "Off": 29, "Def": 27, "SOS": ".522", "TO": -4, "BasePlayoff": 26.0, "Rating": 1490},
         {"team": "Washington Commanders", "abbr": "WAS", "lat": 38.9076, "lon": -76.8645, "stadium": "Northwest Stadium", "surface": "Bermuda Grass", "roof": "Open / Outdoor", "capacity": 67617, "Off": 25, "Def": 28, "SOS": ".436", "TO": -2, "BasePlayoff": 38.0, "Rating": 1510},
     ]
@@ -68,16 +67,14 @@ def load_team_data():
         try:
             rank_df = pd.read_csv(rank_file)
             rank_df['abbr'] = rank_df['abbr'].replace(NFL_ABBR_MAP)
-            df = df.merge(rank_df, on='abbr', how='left', suffixes=('', '_rank'))
-            for col in df.columns:
-                if col.endswith('_rank'):
-                    orig_col = col[:-5]
-                    df[orig_col] = df[col].combine_first(df[orig_col])
-                    df.drop(columns=[col], inplace=True)
+            df = df.set_index('abbr')
+            rank_df = rank_df.set_index('abbr')
+            df.update(rank_df)
+            df = df.reset_index()
         except Exception:
             pass
 
-    df["logo_url"] = df["abbr"].apply(lambda x: x.lower())
+    df["logo_url"] = df["abbr"].apply(lambda x: f"https://a.espncdn.com/i/teamlogos/nfl/500/{x.lower()}.png")
     df["ticket_link"] = df["team"].apply(lambda x: f"https://www.ticketmaster.com/search?q={x.replace(' ', '+')}+tickets")
     return df
 
@@ -126,8 +123,10 @@ def get_live_stadium_weather(lat, lon, roof_type):
         penalty = 0.0
         if temp < 32: penalty += 3.0
         elif temp < 40: penalty += 1.0
+        
         if wind > 20: penalty += 4.0
         elif wind > 15: penalty += 2.0
+        
         if precip > 0.05: penalty += 3.0
         
         condition = "Clear / Fair"
@@ -247,11 +246,11 @@ with st.sidebar.expander("📰 Live Team Vitals & News", expanded=False):
 # Sliding Scale Simulation Modifiers
 st.sidebar.markdown("---")
 st.sidebar.subheader("Manual Forecast Controls")
-st.sidebar.markdown("**1. Injury Attrition Severity (0-10):**\n> *Depth chart erosion.*")
+st.sidebar.markdown("**1. Injury Attrition Severity (0-10):**\n> *Simulate key starter / depth losses.*")
 inj_val = st.sidebar.slider("Injury Attrition", 0, 10, 0)
-st.sidebar.markdown("**2. Weather Severity (0-10):**\n> *Manual override for future unforecastable weather.*")
+st.sidebar.markdown("**2. Weather Severity (0-10):**\n> *Manual weather stress-test.*")
 wea_val = st.sidebar.slider("Weather Severity", 0, 10, 0)
-st.sidebar.markdown("**3. Travel Fatigue Multiplier (0-10):**\n> *Amplifies flight distance fatigue.*")
+st.sidebar.markdown("**3. Travel Fatigue Multiplier (0-10):**\n> *Amplifies long-distance flight fatigue.*")
 trv_val = st.sidebar.slider("Travel Fatigue Multiplier", 0, 10, 0)
 
 # Playoff Odds Engine
@@ -289,6 +288,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             opp_info = team_dict.get(opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "surface": "Unknown", "roof": "Unknown", "Rating": 1500})
             opp_name = opp_info.get("team", opp_abbr)
             
+            # Neutral International Game Coordinates
             international_games = {
                 (1, "LAR", "SF"): {"stadium": "Melbourne Cricket Ground (Australia)", "lat": -37.8199, "lon": 144.9834, "surface": "Hybrid Grass", "roof": "Open / Outdoor"},
                 (3, "DAL", "BAL"): {"stadium": "Maracanã Stadium (Brazil)", "lat": -22.9121, "lon": -43.2301, "surface": "Bermuda Grass", "roof": "Open / Outdoor"},
@@ -303,7 +303,8 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 venue_name = international_games[game_key]["stadium"]
                 dest_surface = international_games[game_key]["surface"]
                 dest_roof = international_games[game_key]["roof"]
-                target_lat_weather, target_lon_weather = international_games[game_key]["lat"], international_games[game_key]["lon"]
+                target_lat_weather = international_games[game_key]["lat"]
+                target_lon_weather = international_games[game_key]["lon"]
                 travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], target_lat_weather, target_lon_weather)
                 hfa_points = 0
             else:
@@ -327,6 +328,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             st.markdown(f"🌱 **Field Surface:** `{dest_surface}`")
             st.markdown(f"✈️ **Flight Distance:** `{travel_distance_miles:,.1f} miles`" if travel_distance_miles > 0 else "🏠 **No Travel Required**")
             
+            # Live Weather
             live_weather = get_live_stadium_weather(target_lat_weather, target_lon_weather, dest_roof)
             st.markdown(f"🌤️ **Live Stadium Weather:** `{live_weather['temp']}°F | {live_weather['wind']} mph wind | {live_weather['condition']}`")
                 
@@ -338,9 +340,12 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
 
             apply_live_weather = st.checkbox("Inject live weather penalty into odds", value=False, help="Overrides manual weather slider and feeds the real-time API penalty directly into the log-odds.")
 
+            # ---------------------------------------------------------
+            # STRICT ZERO-SUM BILATERAL PROBABILITY ENGINE
+            # ---------------------------------------------------------
             ml_file = "weekly_predictions.csv"
             used_ml = False
-            raw_base_prob = 0.50
+            raw_home_prob = 0.50
 
             if os.path.exists(ml_file):
                 try:
@@ -348,31 +353,50 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                     ml_df['home_team'] = ml_df['home_team'].replace(NFL_ABBR_MAP)
                     ml_df['away_team'] = ml_df['away_team'].replace(NFL_ABBR_MAP)
                     
-                    game_match = ml_df[(ml_df["week"] == selected_week) & ((ml_df["home_team"] == opp_abbr) | (ml_df["away_team"] == opp_abbr))]
+                    game_match = ml_df[(ml_df["week"] == selected_week) & (ml_df["home_team"] == home_abbr) & (ml_df["away_team"] == away_abbr)]
                     if not game_match.empty:
-                        raw_base_prob = float(game_match.iloc[0]["home_win_prob" if is_home else "away_win_prob"])
+                        raw_home_prob = float(game_match.iloc[0]["home_win_prob"])
                         used_ml = True
                         st.caption("🤖 *Baseline odds: Machine Learning Pipeline*")
                 except Exception:
                     pass
             
             if not used_ml:
-                team_power = float(team_df_row.get("Rating", 1500))
-                opp_power = float(opp_info.get("Rating", 1500))
-                diff = (team_power + (hfa_points if is_home else -hfa_points)) - opp_power
-                raw_base_prob = 1.0 / (10.0 ** (-diff / 400.0) + 1.0)
+                home_power = float(team_dict.get(home_abbr, {}).get("Rating", 1500))
+                away_power = float(team_dict.get(away_abbr, {}).get("Rating", 1500))
+                diff = (home_power + hfa_points) - away_power
+                raw_home_prob = 1.0 / (10.0 ** (-diff / 400.0) + 1.0)
                 st.caption("🧮 *Baseline odds: Elo Zero-Sum Engine*")
 
-            raw_base_prob = max(0.01, min(0.99, raw_base_prob))
-            base_log_odds = math.log(raw_base_prob / (1.0 - raw_base_prob))
+            # Convert to Log-Odds
+            raw_home_prob = max(0.01, min(0.99, raw_home_prob))
+            home_log_odds = math.log(raw_home_prob / (1.0 - raw_home_prob))
             
             active_wea_val = live_weather['penalty'] if apply_live_weather else wea_val
-            dist_penalty = (min(travel_distance_miles, 3000) / 500.0) * 0.08 * (1.0 + trv_val * 0.15) if travel_distance_miles > 0 else 0.0
-            slider_penalty = (inj_val * 0.12) + (active_wea_val * 0.06) + dist_penalty
             
-            adj_log_odds = base_log_odds - slider_penalty
-            win_prob = round((1.0 / (1.0 + math.exp(-adj_log_odds))) * 100.0, 1)
+            # Calculate Away Flight Distance Bilaterally
+            away_lat = team_dict.get(away_abbr, {}).get("lat", target_lat_weather)
+            away_lon = team_dict.get(away_abbr, {}).get("lon", target_lon_weather)
+            actual_away_flight = calculate_travel_distance(away_lat, away_lon, target_lat_weather, target_lon_weather) if not is_international else 0.0
+            
+            # Bilateral Stress-Test Modifiers
+            dist_penalty = (min(actual_away_flight, 3000) / 500.0) * 0.08 * (1.0 + trv_val * 0.15) if actual_away_flight > 0 else 0.0
+            
+            # Active Team Selection Shift: Penalizes the selected team if injury slider is moved
+            inj_shift = (inj_val * 0.08) if not is_home else -(inj_val * 0.08)
+            
+            # Weather penalty shifts toward home when away team is dome-based
+            wea_shift = (active_wea_val * 0.03) if (any(term in away_usual_roof for term in ["Dome", "Retractable"]) and "Open" in dest_roof) else 0.0
+            
+            # Shift Home Log-Odds
+            net_home_advantage_shift = dist_penalty + inj_shift + wea_shift
+            adj_home_log_odds = home_log_odds + net_home_advantage_shift
+            
+            # Guaranteed 100% Zero-Sum Probabilities
+            adj_home_prob = round((1.0 / (1.0 + math.exp(-adj_home_log_odds))) * 100.0, 1)
+            adj_away_prob = round(100.0 - adj_home_prob, 1)
 
+            win_prob = adj_home_prob if is_home else adj_away_prob
             st.metric(label="Adjusted Matchup Win Likelihood", value=f"{win_prob}%")
 
 # 12. Dynamic Live Game Tracker
@@ -403,126 +427,10 @@ else:
     st.sidebar.progress(safe_progress_val(win_prob))
     st.sidebar.caption("⚡ *Live play-by-play and win probability will stream here automatically at kickoff.*")
 
-# --- KP LEAGUE (#859017): INSTANT PLAYER SUCCESS RATINGS & WAIVER HUB ---
-st.markdown("---")
-st.subheader(f"🏆 KP League (ID# {KP_LEAGUE_ID}): Seattle Axel's Player Success Matrix")
-st.markdown("Enter your exact roster below to evaluate your players instantly against zero-leakage defensive EPA and opponent vulnerabilities.")
-
-p_col1, p_col2 = st.columns([1, 1])
-
-with p_col1:
-    st.markdown("### 📋 Seattle Axel's Roster Players")
-    eval_week_player = st.selectbox("Select Evaluation Week", range(1, 19), index=0, key="player_eval_week")
-    
-    player_input_names = st.text_area(
-        "Enter Your Players (Format: Player Name - Team Abbreviation)",
-        value="",
-        placeholder="e.g.,\nPatrick Mahomes - KC\nTyreek Hill - MIA\nBreece Hall - NYJ",
-        help="Type or paste your actual roster. Each player on a new line with their NFL team abbreviation."
-    )
-
-with p_col2:
-    st.markdown("### 💡 Waiver Wire / Free Agent Swap Finder")
-    st.markdown("Scan unrostered teams facing bottom-tier defenses (Def Rank #23–#32) for high-upside pickups.")
-    waiver_pos_filter = st.selectbox("Waiver Strategy", ["Show All Favorable Matchups", "Top 5 Elite Targets Only"], key="waiver_strat")
-
-parsed_players = []
-for line in player_input_names.split("\n"):
-    if "-" in line:
-        parts = line.split("-")
-        name = parts[0].strip()
-        t_str = parts[1].strip().upper()
-        matched_row = df_teams[(df_teams["abbr"] == t_str) | (df_teams["team"].str.upper().str.contains(t_str))]
-        if not matched_row.empty:
-            parsed_players.append({"name": name, "team_row": matched_row.iloc[0]})
-
-if parsed_players and not official_schedule.empty:
-    st.markdown(f"#### 📊 Week {eval_week_player} Success Ratings (Seattle Axel's)")
-    player_evals = []
-    
-    for p in parsed_players:
-        t_name = p["team_row"]["team"]
-        t_abbr = p["team_row"]["abbr"]
-        
-        t_games = official_schedule[(official_schedule["home_team"] == t_abbr) | (official_schedule["away_team"] == t_abbr)]
-        w_game = t_games[t_games["week"] == eval_week_player]
-        
-        if not w_game.empty:
-            g = w_game.iloc[0]
-            is_h = (g["home_team"] == t_abbr)
-            opp_a = g["away_team"] if is_h else g["home_team"]
-            opp_row = team_dict.get(opp_a, {})
-            opp_name = opp_row.get("team", opp_a)
-            opp_def = int(float(opp_row.get("Def", 16)))
-            
-            if opp_def >= 23:
-                rating = "🔥 Highly Favorable (Elite Matchup)"
-            elif opp_def <= 10:
-                rating = "❄️ Unfavorable (Tough Matchup)"
-            else:
-                rating = "⚡ Neutral Matchup"
-            
-            player_evals.append({
-                "Player": p["name"],
-                "Team": t_abbr,
-                "Opponent": f"{opp_name} ({'Home' if is_h else 'Away'})",
-                "Opp. Def Rank": f"#{opp_def}",
-                "Success Rating": rating
-            })
-        else:
-            player_evals.append({
-                "Player": p["name"],
-                "Team": t_abbr,
-                "Opponent": "Bye Week",
-                "Opp. Def Rank": "N/A",
-                "Success Rating": "💤 Bye Week (Bench)"
-            })
-            
-    if player_evals:
-        st.dataframe(pd.DataFrame(player_evals), use_container_width=True, hide_index=True)
-
-if not official_schedule.empty:
-    st.markdown(f"#### ⚡ Week {eval_week_player} Top Waiver Wire Targets (Favorable Matchup Swaps)")
-    wire_evals = []
-    roster_team_abbrs = [p["team_row"]["abbr"] for p in parsed_players]
-    
-    for _, t_row in df_teams.iterrows():
-        t_name = t_row["team"]
-        t_abbr = t_row["abbr"]
-        if t_abbr in roster_team_abbrs:
-            continue
-            
-        t_games = official_schedule[(official_schedule["home_team"] == t_abbr) | (official_schedule["away_team"] == t_abbr)]
-        w_game = t_games[t_games["week"] == eval_week_player]
-        
-        if not w_game.empty:
-            g = w_game.iloc[0]
-            is_h = (g["home_team"] == t_abbr)
-            opp_a = g["away_team"] if is_h else g["home_team"]
-            opp_row = team_dict.get(opp_a, {})
-            opp_def = int(float(opp_row.get("Def", 16)))
-            
-            if waiver_pos_filter == "Top 5 Elite Targets Only" and opp_def < 27:
-                continue
-                
-            if opp_def >= 23:
-                wire_evals.append({
-                    "Available Team Offense": t_name,
-                    "Matchup": f"vs. {opp_row.get('team', opp_a)} ({'Home' if is_h else 'Away'})",
-                    "Opp. Def Rank": f"#{opp_def}",
-                    "Waiver Success Rating": "🔥 High Upside Swap Target"
-                })
-                
-    if wire_evals:
-        w_df = pd.DataFrame(wire_evals).sort_values(by="Opp. Def Rank", ascending=False).head(5)
-        st.dataframe(w_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No standout waiver targets found matching this filter for the selected week.")
-
 # 13. Model Performance & Pipeline Freshness Header
 st.markdown("---")
 metrics_file = "model_metrics.csv"
-acc, brier, ll = 62.8, 0.216, 0.615
+acc, brier, ll = 65.4, 0.215, 0.612
 freshness_label = "Baseline Mock"
 
 if os.path.exists(metrics_file):
@@ -548,8 +456,7 @@ col3.metric("Log Loss", f"{ll}", help="Penalizes extreme misconfidence.")
 # 14. Folium Map
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 for _, row in df_teams.iterrows():
-    icon_url = f"https://a.espncdn.com/i/teamlogos/nfl/500/{row['logo_url']}.png"
-    icon = folium.CustomIcon(icon_url, icon_size=(35, 35))
+    icon = folium.CustomIcon(row["logo_url"], icon_size=(35, 35))
     popup_text = f"<b>{row['team']}</b><br>Playoff Odds: {row.get('adjusted_playoff', 50.0)}%"
     folium.Marker(location=[row["lat"], row["lon"]], icon=icon, tooltip=row["team"], popup=folium.Popup(popup_text, max_width=300)).add_to(m)
 
