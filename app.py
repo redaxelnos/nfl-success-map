@@ -66,11 +66,18 @@ def load_team_data():
     if os.path.exists(rank_file):
         try:
             rank_df = pd.read_csv(rank_file)
-            rank_df['abbr'] = rank_df['abbr'].replace(NFL_ABBR_MAP)
-            df = df.set_index('abbr')
-            rank_df = rank_df.set_index('abbr')
-            df.update(rank_df)
-            df = df.reset_index()
+            if "abbr" in rank_df.columns:
+                rank_df["abbr"] = rank_df["abbr"].replace(NFL_ABBR_MAP)
+                update_cols = [c for c in ["Off", "Def", "TO", "SOS", "Rating", "BasePlayoff"] if c in rank_df.columns]
+                
+                # Non-destructive merge preserving abbr column and fallbacks
+                merged = pd.merge(df, rank_df[["abbr"] + update_cols], on="abbr", how="left", suffixes=("", "_new"))
+                for col in update_cols:
+                    new_col = f"{col}_new"
+                    if new_col in merged.columns:
+                        merged[col] = merged[new_col].combine_first(merged[col])
+                        merged.drop(columns=[new_col], inplace=True)
+                df = merged
         except Exception:
             pass
 
