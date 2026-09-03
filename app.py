@@ -88,16 +88,33 @@ def load_team_data():
 df_teams = load_team_data()
 team_dict = df_teams.set_index("abbr").to_dict("index")
 
-# 2. Team News / Vitals Feed
-@st.cache_data
-def load_team_news():
-    return {
-        "KC": ["⚡ Practice Report: Full starter participation.", "🏥 Injury Update: Backup TE minor ankle soreness."],
-        "SF": ["⚡ Roster Alert: Elevated practice squad DL.", "🏥 Injury Update: RB limited in practice."],
-        "BAL": ["⚡ Coaching Note: Red-zone execution priority.", "🏥 Injury Update: LB cleared for contact."],
-        "BUF": ["⚡ Weather Advisory: High winds expected.", "🏥 Injury Update: Extra secondary depth reps."]
-    }
-team_news = load_team_news()
+# 2. Live Team Injury & Vitals Feed
+@st.cache_data(ttl=3600)
+def load_team_news(team_abbr, year):
+    news_items = []
+    try:
+        injuries = nfl.import_injuries([year])
+        if 'team' in injuries.columns:
+            injuries['team'] = injuries['team'].replace(NFL_ABBR_MAP)
+        team_injuries = injuries[injuries['team'] == team_abbr]
+        
+        if not team_injuries.empty:
+            latest_week = team_injuries['week'].max()
+            current_inj = team_injuries[(team_injuries['week'] == latest_week) & (team_injuries['report_status'].notna())]
+            
+            for _, row in current_inj.iterrows():
+                player = row.get('full_name', 'Unknown')
+                position = row.get('position', '')
+                status = row.get('report_status', '')
+                injury = row.get('report_primary_injury', 'Undisclosed')
+                news_items.append(f"🏥 **{player} ({position}):** {status} ({injury})")
+    except Exception:
+        pass
+
+    if not news_items:
+        news_items.append("✅ No active game-status injury designations reported this week.")
+        
+    return news_items
 
 # 3. Fetch Official Schedules
 @st.cache_data
@@ -246,7 +263,7 @@ with st.sidebar.expander("🏟️ Stadium & Facility Profile", expanded=False):
     st.markdown(f"**Capacity:** `{int(team_df_row.get('capacity', 0)):,} seats`")
 
 with st.sidebar.expander("📰 Live Team Vitals & News", expanded=False):
-    news_list = team_news.get(selected_abbr, ["⚡ Practice Report: Regular depth chart active.", "🏥 Injury Status: No active designations."])
+    news_list = load_team_news(selected_abbr, CURRENT_YEAR)
     for item in news_list:
         st.markdown(f"- {item}")
 
@@ -406,7 +423,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             win_prob = adj_home_prob if is_home else adj_away_prob
             st.metric(label="Adjusted Matchup Win Likelihood", value=f"{win_prob}%")
 
-# 12. Dynamic Live Game Tracker
+# 6. Dynamic Live Game Tracker
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"📡 Week {selected_week} Game Tracker")
 
@@ -434,7 +451,7 @@ else:
     st.sidebar.progress(safe_progress_val(win_prob))
     st.sidebar.caption("⚡ *Live play-by-play and win probability will stream here automatically at kickoff.*")
 
-# 13. Model Performance & Pipeline Freshness Header
+# 7. Model Performance & Pipeline Freshness Header
 st.markdown("---")
 metrics_file = "model_metrics.csv"
 acc, brier, ll = 65.4, 0.215, 0.612
@@ -460,7 +477,7 @@ col1.metric("Historical Win/Loss Accuracy", f"{acc}%", help="Walk-forward accura
 col2.metric("Brier Score", f"{brier}", help="Measures probabilistic accuracy (0.0 is perfect, 0.250 is coin flip).")
 col3.metric("Log Loss", f"{ll}", help="Penalizes extreme misconfidence.")
 
-# 14. Folium Map
+# 8. Folium Map
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 for _, row in df_teams.iterrows():
     icon = folium.CustomIcon(row["logo_url"], icon_size=(35, 35))
