@@ -365,11 +365,12 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             apply_live_weather = st.checkbox("Inject live weather penalty into odds", value=False, help="Overrides manual weather slider and feeds the real-time API penalty directly into the log-odds.")
 
             # ---------------------------------------------------------
-            # STRICT ZERO-SUM BILATERAL PROBABILITY ENGINE
+            # STRICT ZERO-SUM BILATERAL PROBABILITY ENGINE & MARKET DISCREPANCY
             # ---------------------------------------------------------
             ml_file = "weekly_predictions.csv"
             used_ml = False
             raw_home_prob = 0.50
+            game_match = pd.DataFrame()
 
             if os.path.exists(ml_file):
                 try:
@@ -406,10 +407,8 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             # Bilateral Stress-Test Modifiers
             dist_penalty = (min(actual_away_flight, 3000) / 500.0) * 0.08 * (1.0 + trv_val * 0.15) if actual_away_flight > 0 else 0.0
             
-            # Active Team Selection Shift: Penalizes the selected team if injury slider is moved
+            # Active Team Selection Shift
             inj_shift = (inj_val * 0.08) if not is_home else -(inj_val * 0.08)
-            
-            # Weather penalty shifts toward home when away team is dome-based
             wea_shift = (active_wea_val * 0.03) if (any(term in away_usual_roof for term in ["Dome", "Retractable"]) and "Open" in dest_roof) else 0.0
             
             # Shift Home Log-Odds
@@ -422,6 +421,36 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
 
             win_prob = adj_home_prob if is_home else adj_away_prob
             st.metric(label="Adjusted Matchup Win Likelihood", value=f"{win_prob}%")
+
+            # ---------------------------------------------------------
+            # MARKET DISCREPANCY & SPREAD EDGE DRAWER
+            # ---------------------------------------------------------
+            if used_ml and not game_match.empty and 'model_margin' in game_match.columns:
+                m_row = game_match.iloc[0]
+                model_margin = m_row.get('model_margin', None)
+                market_margin = m_row.get('market_margin', None)
+                home_edge = m_row.get('home_edge', None)
+
+                if pd.notna(model_margin) and pd.notna(market_margin) and pd.notna(home_edge):
+                    with st.expander("💰 Market Discrepancy & Spread Edge", expanded=False):
+                        # Convert margins to perspective of currently selected team
+                        team_model_margin = float(model_margin if is_home else -model_margin)
+                        team_market_margin = float(market_margin if is_home else -market_margin)
+                        team_edge = float(home_edge if is_home else -home_edge)
+
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Market Line", f"{team_market_margin:+.1f} pts", help="Consensus market spread from this team's perspective.")
+                        c2.metric("Model Margin", f"{team_model_margin:+.1f} pts", help="Points this team is projected to win (+) or lose (-) by.")
+                        c3.metric(
+                            "Model Edge", 
+                            f"{team_edge:+.1f} pts", 
+                            delta=f"{team_edge:+.1f} vs Line",
+                            help="Positive indicates your model views this team more favorably than the sportsbooks."
+                        )
+
+                        if abs(team_edge) >= 2.0:
+                            favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
+                            st.caption(f"🔥 **Actionable Edge:** Model identifies a **{abs(team_edge):.1f}-point efficiency discrepancy** favoring the **{favored_team}** against the market consensus.")
 
 # 6. Dynamic Live Game Tracker
 st.sidebar.markdown("---")
