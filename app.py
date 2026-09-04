@@ -432,13 +432,13 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 home_edge = m_row.get('home_edge', None)
 
                 if pd.notna(model_margin) and pd.notna(market_margin) and pd.notna(home_edge):
-                    with st.expander("💰 Market Discrepancy & Spread Edge", expanded=False):
+                    with st.expander("💰 Market Discrepancy & Spread Edge", expanded=True):
                         # Convert margins to perspective of currently selected team
                         team_model_margin = float(model_margin if is_home else -model_margin)
                         team_market_margin = float(market_margin if is_home else -market_margin)
                         team_edge = float(home_edge if is_home else -home_edge)
 
-                        # Convert raw point margins to standard Sportsbook Spreads (Favorites = -, Underdogs = +)
+                        # Convert raw point margins to standard Sportsbook Spreads
                         team_market_spread = -team_market_margin
                         team_model_spread = -team_model_margin
 
@@ -446,18 +446,38 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                             return "PK" if round(val, 1) == 0.0 else f"{val:+.1f}"
 
                         c1, c2, c3 = st.columns(3)
-                        c1.metric("Market Spread", format_spread(team_market_spread), help="Consensus Vegas spread. Negative means favorite.")
+                        c1.metric("Market Spread", format_spread(team_market_spread), help="Consensus Vegas spread.")
                         c2.metric("Model Spread", format_spread(team_model_spread), help="Where the model thinks the spread should be.")
+                        
+                        edge_val = abs(team_edge)
                         c3.metric(
-                            "Model Edge", 
-                            f"{team_edge:+.1f} pts", 
-                            delta=f"{team_edge:+.1f} vs Line",
-                            help="Positive indicates your model views this team more favorably than the sportsbooks."
+                            "Hidden Value", 
+                            f"{edge_val:.1f} pts", 
+                            delta=f"{team_edge:+.1f} for {st.session_state.selected_team}",
+                            help="How much mathematical value this team has against the Vegas line."
                         )
 
-                        if abs(team_edge) >= 2.0:
-                            favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
-                            st.caption(f"🔥 **Actionable Edge:** Model identifies a **{abs(team_edge):.1f}-point efficiency discrepancy** favoring the **{favored_team}** against the market consensus.")
+                        # Plain English Dynamic Translator
+                        favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
+                        st.markdown("---")
+                        
+                        if round(edge_val, 1) == 0.0:
+                            st.caption("⚖️ **Perfect Agreement:** The model and the sportsbooks project the exact same margin.")
+                        else:
+                            # Generate intuitive "Closer game / Blowout" logic
+                            if team_edge > 0 and team_market_spread > 0:
+                                logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a closer game (losing by {team_model_spread:.1f})."
+                            elif team_edge > 0 and team_market_spread <= 0:
+                                logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by even more ({abs(team_model_spread):.1f})."
+                            elif team_edge < 0 and team_market_spread > 0:
+                                logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks they will lose by even worse ({team_model_spread:.1f})."
+                            else:
+                                logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model thinks it will be a closer game (winning by only {abs(team_model_spread):.1f})."
+
+                            icon = "🔥" if edge_val >= 2.0 else "💡"
+                            bold_alert = "**Actionable Edge:** " if edge_val >= 2.0 else "**How to read this:** "
+                            
+                            st.caption(f"{icon} {bold_alert}{logic_text} Therefore, the model identifies **{edge_val:.1f} points of betting value** on the **{favored_team}**.")
 
 # 6. Dynamic Live Game Tracker
 st.sidebar.markdown("---")
