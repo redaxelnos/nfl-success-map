@@ -40,6 +40,7 @@ def main():
     
     pbp = raw_pbp[(raw_pbp['pass'] == 1) | (raw_pbp['rush'] == 1)].copy()
     pbp = clean_abbr(pbp, ['posteam', 'defteam'])
+    raw_pbp_clean = clean_abbr(raw_pbp.copy(), ['posteam', 'defteam'])
 
     current_completed = sched[(sched['season'] == current_year) & (sched['result'].notna())]
     ranking_year = current_year if len(current_completed) >= 10 else current_year - 1
@@ -131,9 +132,8 @@ def main():
     
     X = completed[features].fillna(0)
     y_prob = completed['home_win']
-    y_margin = completed['result'] # Result = Home Score - Away Score
+    y_margin = completed['result'] 
 
-    # Time-Series Split for proper chronological hyperparameter tuning
     tscv = TimeSeriesSplit(n_splits=5)
 
     # 1. Win Probability Pipeline
@@ -183,11 +183,10 @@ def main():
     avg_features = X.mean().to_dict()
     ratings = {}
     
-    # Calculate Power Rating by forcing each team to play a mathematically "Average" opponent
     for t in all_teams:
         mock_game = avg_features.copy()
-        mock_game['spread_line'] = 0.0  # Neutral Field
-        mock_game['total_line'] = 45.0  # League Average Total
+        mock_game['spread_line'] = 0.0 
+        mock_game['total_line'] = 45.0 
         
         mock_game['home_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
         mock_game['home_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
@@ -199,14 +198,13 @@ def main():
         
         mock_df = pd.DataFrame([mock_game])[features]
         expected_pt_diff = margin_pipe.predict(mock_df)[0]
-        ratings[t] = 1500.0 + (expected_pt_diff * (400.0 / 14.0)) # Scale to Elo
+        ratings[t] = 1500.0 + (expected_pt_diff * (400.0 / 14.0)) 
 
     # -------------------------------------------------------------------------
     # PART D: PREDICT MATCHUPS & CALCULATE MARKET EDGE
     # -------------------------------------------------------------------------
     upcoming = sched[(sched['season'] == current_year) & (sched['result'].isna())].copy()
     
-    # Fast 10k Monte Carlo Playoffs
     playoff_probs = {t: 50.0 for t in all_teams}
     if not upcoming.empty:
         for t in all_teams:
@@ -236,11 +234,10 @@ def main():
         
         # 2. Calculate Market Edge via Discrepancy Engine
         upcoming['model_margin'] = margin_pipe.predict(X_upcoming)
-        upcoming['market_margin'] = -upcoming['spread_line'].fillna(0) # Invert spread_line to match margin perspective
+        upcoming['market_margin'] = -upcoming['spread_line'].fillna(0)
         upcoming['home_edge'] = upcoming['model_margin'] - upcoming['market_margin']
         
         upcoming[['game_id', 'season', 'week', 'home_team', 'away_team', 'home_win_prob', 'away_win_prob', 'model_margin', 'market_margin', 'home_edge']].to_csv("weekly_predictions.csv", index=False)
-        print("Exported weekly_predictions.csv with Market Edges.")
 
         # Monte Carlo Base Wins
         base_wins = {t: 0.0 for t in all_teams}
@@ -274,9 +271,18 @@ def main():
     # PART E: EXPORT RANKINGS FOR DASHBOARD
     # -------------------------------------------------------------------------
     rank_games_hist = sched[(sched['season'] == ranking_year) & (sched['result'].notna())]
-    hist_wins = {t: sum([1.0 if r>0 else 0.5 for _,_,r in rank_games_hist[rank_games_hist['home_team']==t].itertuples(index=False)]) + 
-                    sum([1.0 if r<0 else 0.5 for _,_,r in rank_games_hist[rank_games_hist['away_team']==t].itertuples(index=False)]) for t in all_teams}
-    hist_gms = {t: len(rank_games_hist[(rank_games_hist['home_team']==t) | (rank_games_hist['away_team']==t)]) for t in all_teams}
+    hist_wins = {t: 0.0 for t in all_teams}
+    hist_gms = {t: 0 for t in all_teams}
+    
+    for _, g in rank_games_hist.iterrows():
+        h, a, res = g['home_team'], g['away_team'], g['result']
+        hist_gms[h] += 1
+        hist_gms[a] += 1
+        if res > 0: hist_wins[h] += 1.0
+        elif res < 0: hist_wins[a] += 1.0
+        else:
+            hist_wins[h] += 0.5
+            hist_wins[a] += 0.5
 
     team_sos = {}
     for t in all_teams:
@@ -286,11 +292,16 @@ def main():
         o_gms = sum([hist_gms.get(o, 0) for o in opp_list])
         team_sos[t] = f".{int(round((o_pts / o_gms) * 1000)):03d}" if o_gms > 0 else ".500"
 
+    to_pbp = raw_pbp_clean[raw_pbp_clean['season'] == ranking_year]
+    to_take = to_pbp.groupby('defteam')['interception'].sum() + to_pbp.groupby('defteam')['fumble_lost'].sum()
+    to_give = to_pbp.groupby('posteam')['interception'].sum() + to_pbp.groupby('posteam')['fumble_lost'].sum()
+    to_margin = (to_take.fillna(0) - to_give.fillna(0)).to_dict()
+
     ranking_rows = [{
         'abbr': t,
-        'raw_off': latest_metrics[t]['off_early_pass_epa'], # Rank Offense by stable early-down passing
-        'raw_def': latest_metrics[t]['def_success'],        # Rank Defense by overall play success rate allowed
-        'TO': int(latest_metrics[t]['actual_to_margin']),
+        'raw_off': latest_metrics[t]['off_early_pass_epa'], 
+        'raw_def': latest_metrics[t]['def_success'],        
+        'TO': int(to_margin.get(t, 0)),
         'SOS': team_sos.get(t, ".500"),
         'Rating': round(ratings[t], 1),
         'BasePlayoff': round(playoff_probs[t], 1)
