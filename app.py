@@ -223,7 +223,7 @@ def calculate_travel_distance(lat1, lon1, lat2, lon2):
     a = (math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
     return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
 
-# App State & Sidebar
+# App State & Sidebar Setup
 if "selected_team" not in st.session_state:
     st.session_state.selected_team = "Kansas City Chiefs"
 
@@ -365,7 +365,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             apply_live_weather = st.checkbox("Inject live weather penalty into odds", value=False, help="Overrides manual weather slider and feeds the real-time API penalty directly into the log-odds.")
 
             # ---------------------------------------------------------
-            # STRICT ZERO-SUM BILATERAL PROBABILITY ENGINE & MARKET DISCREPANCY
+            # STRICT ZERO-SUM BILATERAL PROBABILITY ENGINE
             # ---------------------------------------------------------
             ml_file = "weekly_predictions.csv"
             used_ml = False
@@ -438,9 +438,16 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                         team_market_margin = float(market_margin if is_home else -market_margin)
                         team_edge = float(home_edge if is_home else -home_edge)
 
+                        # Convert raw point margins to standard Sportsbook Spreads (Favorites = -, Underdogs = +)
+                        team_market_spread = -team_market_margin
+                        team_model_spread = -team_model_margin
+
+                        def format_spread(val):
+                            return "PK" if round(val, 1) == 0.0 else f"{val:+.1f}"
+
                         c1, c2, c3 = st.columns(3)
-                        c1.metric("Market Line", f"{team_market_margin:+.1f} pts", help="Consensus market spread from this team's perspective.")
-                        c2.metric("Model Margin", f"{team_model_margin:+.1f} pts", help="Points this team is projected to win (+) or lose (-) by.")
+                        c1.metric("Market Spread", format_spread(team_market_spread), help="Consensus Vegas spread. Negative means favorite.")
+                        c2.metric("Model Spread", format_spread(team_model_spread), help="Where the model thinks the spread should be.")
                         c3.metric(
                             "Model Edge", 
                             f"{team_edge:+.1f} pts", 
