@@ -9,7 +9,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
-# Canonical 32-team abbreviations
+# Canonical 32-team abbreviations matching ESPN and frontend interfaces
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 AFC_TEAMS = {'BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX', 'KC', 'LAC', 'LV', 'MIA', 'NE', 'NYJ', 'PIT', 'TEN'}
 NFC_TEAMS = {'ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR', 'MIN', 'NO', 'NYG', 'PHI', 'SEA', 'SF', 'TB', 'WAS'}
@@ -58,7 +58,7 @@ def main():
     pbp['early_pass_epa'] = np.where(pbp['is_early_pass'] == 1, pbp['epa'], np.nan)
     pbp['rush_epa'] = np.where(pbp['is_rush'] == 1, pbp['epa'], np.nan)
 
-    # Offense
+    # Offense aggregates
     game_off = pbp.groupby(['game_id', 'season', 'week', 'posteam']).agg(
         off_early_pass_epa=('early_pass_epa', 'mean'),
         off_rush_epa=('rush_epa', 'mean'),
@@ -68,7 +68,7 @@ def main():
         off_fumbles_lost=('fumble_lost', 'sum')
     ).reset_index().rename(columns={'posteam': 'team'})
     
-    # Defense
+    # Defense aggregates
     game_def = pbp.groupby(['game_id', 'season', 'week', 'defteam']).agg(
         def_early_pass_epa=('early_pass_epa', 'mean'),
         def_rush_epa=('rush_epa', 'mean'),
@@ -80,7 +80,7 @@ def main():
     
     team_games = pd.merge(game_off, game_def, on=['game_id', 'season', 'week', 'team'], how='outer').fillna(0)
     
-    # Expected Turnover Margin (Luck Regression: Fumble Recoveries treated as 50/50)
+    # Expected Turnover Margin (Fumble recoveries normalized to 50/50 expectation)
     team_games['exp_giveaways'] = team_games['off_ints'] + 0.5 * team_games['off_fumbles']
     team_games['exp_takeaways'] = team_games['def_ints'] + 0.5 * team_games['def_fumbles']
     team_games['exp_to_margin'] = team_games['exp_takeaways'] - team_games['exp_giveaways']
@@ -88,7 +88,7 @@ def main():
 
     team_games = team_games.sort_values(['season', 'week']).reset_index(drop=True)
     
-    # Expanding Windows & Season Rollovers (Zero Leakage)
+    # Expanding windows with zero-leakage prior shift
     cols_to_expand = ['off_early_pass_epa', 'off_rush_epa', 'off_success',
                       'def_early_pass_epa', 'def_rush_epa', 'def_success',
                       'exp_to_margin', 'actual_to_margin']
@@ -104,7 +104,7 @@ def main():
     for c in cols_to_expand:
         team_games[f'cum_{c}'] = team_games[f'cum_{c}'].fillna(team_games[f'prev_{c}']).fillna(0)
 
-    # Attach features to schedule
+    # Attach features back to schedule
     home_features = team_games[['game_id', 'team'] + [f'cum_{c}' for c in cols_to_expand]].rename(
         columns={'team': 'home_team', **{f'cum_{c}': f'home_{c}' for c in cols_to_expand}})
     away_features = team_games[['game_id', 'team'] + [f'cum_{c}' for c in cols_to_expand]].rename(
@@ -168,7 +168,7 @@ def main():
         }]).to_csv("model_metrics.csv", index=False)
 
     # -------------------------------------------------------------------------
-    # PART C: DYNAMIC TEAM POWER RATINGS (EVALUATED VS "AVERAGE" TEAM)
+    # PART C: DYNAMIC TEAM POWER RATINGS (EVALUATED VS AVERAGE TEAM)
     # -------------------------------------------------------------------------
     print("Projecting True Team Power Ratings via Margin Regression...")
     latest_metrics = {}
@@ -227,19 +227,19 @@ def main():
 
         X_upcoming = upcoming[features].fillna(0)
         
-        # 1. Calculate Probabilities
+        # Win Probabilities
         probs = prob_pipe.predict_proba(X_upcoming)
         upcoming['home_win_prob'] = probs[:, 1]
         upcoming['away_win_prob'] = probs[:, 0]
         
-        # 2. Calculate Market Edge via Discrepancy Engine
+        # Discrepancy Engine (Positive spread_line in nflverse represents home margin)
         upcoming['model_margin'] = margin_pipe.predict(X_upcoming)
-        upcoming['market_margin'] = -upcoming['spread_line'].fillna(0)
+        upcoming['market_margin'] = upcoming['spread_line'].fillna(0)
         upcoming['home_edge'] = upcoming['model_margin'] - upcoming['market_margin']
         
         upcoming[['game_id', 'season', 'week', 'home_team', 'away_team', 'home_win_prob', 'away_win_prob', 'model_margin', 'market_margin', 'home_edge']].to_csv("weekly_predictions.csv", index=False)
 
-        # Monte Carlo Base Wins
+        # 10,000 Iteration Monte Carlo Simulation
         base_wins = {t: 0.0 for t in all_teams}
         for _, g in sched[(sched['season'] == current_year) & (sched['result'].notna())].iterrows():
             if g['result'] > 0: base_wins[g['home_team']] += 1.0
