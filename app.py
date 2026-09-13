@@ -24,7 +24,7 @@ st.markdown(
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 
-# 1. Complete 32-Team Dataset (Updated 2026 Venues & Co-Location Map Offsets)
+# 1. Complete 32-Team Dataset (Updated Venues & Co-Location Map Offsets)
 def load_team_data():
     base_data = [
         {"team": "Arizona Cardinals", "abbr": "ARI", "lat": 33.5276, "lon": -112.2626, "stadium": "State Farm Stadium", "surface": "Bermuda Grass", "roof": "Retractable Roof", "capacity": 63400, "Off": 18, "Def": 22, "SOS": ".536", "TO": -2, "BasePlayoff": 32.0, "Rating": 1500},
@@ -464,15 +464,20 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                         if round(edge_val, 1) == 0.0:
                             st.caption("⚖️ **Perfect Agreement:** The model and the sportsbooks project the exact same margin.")
                         else:
-                            # Generate intuitive "Closer game / Blowout" logic
-                            if team_edge > 0 and team_market_spread > 0:
-                                logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a closer game (losing by {team_model_spread:.1f})."
-                            elif team_edge > 0 and team_market_spread <= 0:
-                                logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by even more ({abs(team_model_spread):.1f})."
-                            elif team_edge < 0 and team_market_spread > 0:
-                                logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks they will lose by even worse ({team_model_spread:.1f})."
-                            else:
-                                logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model thinks it will be a closer game (winning by only {abs(team_model_spread):.1f})."
+                            if team_edge > 0:
+                                if team_market_spread > 0 and team_model_spread <= 0:
+                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to be underdogs (+{team_market_spread:.1f}), but the model expects an outright **UPSET victory** (winning by {abs(team_model_spread):.1f})."
+                                elif team_market_spread > 0 and team_model_spread > 0:
+                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a much closer game (losing by only {team_model_spread:.1f})."
+                                elif team_market_spread <= 0 and team_model_spread < 0:
+                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by an even larger blowout ({abs(team_model_spread):.1f})."
+                            else: # team_edge < 0
+                                if team_market_spread <= 0 and team_model_spread > 0:
+                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to be favorites (-{abs(team_market_spread):.1f}), but the model expects an outright **UPSET loss** (losing by {team_model_spread:.1f})."
+                                elif team_market_spread <= 0 and team_model_spread <= 0:
+                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model thinks it will be a much closer game (winning by only {abs(team_model_spread):.1f})."
+                                elif team_market_spread > 0 and team_model_spread > 0:
+                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model expects them to get beat even worse (losing by {team_model_spread:.1f})."
 
                             icon = "🔥" if edge_val >= 2.0 else "💡"
                             bold_alert = "**Actionable Edge:** " if edge_val >= 2.0 else "**How to read this:** "
