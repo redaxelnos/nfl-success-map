@@ -9,7 +9,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
-# Canonical 32-team abbreviations
+# Canonical abbreviations
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 AFC_TEAMS = {'BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX', 'KC', 'LAC', 'LV', 'MIA', 'NE', 'NYJ', 'PIT', 'TEN'}
 NFC_TEAMS = {'ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR', 'MIN', 'NO', 'NYG', 'PHI', 'SEA', 'SF', 'TB', 'WAS'}
@@ -27,7 +27,6 @@ def main():
     years_to_pull = [current_year - 3, current_year - 2, current_year - 1, current_year]
     print(f"[{datetime.datetime.now()}] Ingesting data for seasons {years_to_pull}...")
     
-    # 1. Ingest Data
     try:
         raw_sched = nfl.import_schedules(years_to_pull)
         raw_pbp = nfl.import_pbp_data(years_to_pull)
@@ -47,12 +46,20 @@ def main():
     all_teams = sorted(list(set(sched['home_team'].unique()) | set(sched['away_team'].unique())))
 
     # -------------------------------------------------------------------------
-    # PART A: FEATURE ENGINEERING
+    # PART A: FEATURE ENGINEERING (Garbage Time & Explosiveness Added)
     # -------------------------------------------------------------------------
-    print("Engineering Early-Down EPA & Luck-Regressed Turnovers...")
+    print("Engineering Context-Aware Features (Garbage Time Filtered, Explosiveness Added)...")
+    
+    # Garbage Time Filter: Remove 4th Qtr plays where Win Prob > 98% or < 2%
+    pbp['is_garbage'] = ((pbp['qtr'] == 4) & ((pbp['wp'] > 0.98) | (pbp['wp'] < 0.02)))
+    pbp = pbp[~pbp['is_garbage']].copy()
+    
     pbp['is_early_pass'] = ((pbp['pass'] == 1) & (pbp['down'].isin([1.0, 2.0]))).astype(int)
     pbp['is_rush'] = (pbp['rush'] == 1).astype(int)
     pbp['success'] = (pbp['epa'] > 0).astype(int)
+    
+    # Explosive Play Definition: >=20 yd pass OR >=12 yd rush
+    pbp['is_explosive'] = (((pbp['pass'] == 1) & (pbp['yards_gained'] >= 20)) | ((pbp['rush'] == 1) & (pbp['yards_gained'] >= 12))).astype(int)
     
     pbp['early_pass_epa'] = np.where(pbp['is_early_pass'] == 1, pbp['epa'], np.nan)
     pbp['rush_epa'] = np.where(pbp['is_rush'] == 1, pbp['epa'], np.nan)
@@ -61,6 +68,7 @@ def main():
         off_early_pass_epa=('early_pass_epa', 'mean'),
         off_rush_epa=('rush_epa', 'mean'),
         off_success=('success', 'mean'),
+        off_explosive=('is_explosive', 'mean'),
         off_ints=('interception', 'sum'),
         off_fumbles=('fumble', 'sum'),
         off_fumbles_lost=('fumble_lost', 'sum')
@@ -70,6 +78,7 @@ def main():
         def_early_pass_epa=('early_pass_epa', 'mean'),
         def_rush_epa=('rush_epa', 'mean'),
         def_success=('success', 'mean'),
+        def_explosive=('is_explosive', 'mean'),
         def_ints=('interception', 'sum'),
         def_fumbles=('fumble', 'sum'),
         def_fumbles_lost=('fumble_lost', 'sum')
@@ -84,8 +93,8 @@ def main():
 
     team_games = team_games.sort_values(['season', 'week']).reset_index(drop=True)
     
-    cols_to_expand = ['off_early_pass_epa', 'off_rush_epa', 'off_success',
-                      'def_early_pass_epa', 'def_rush_epa', 'def_success',
+    cols_to_expand = ['off_early_pass_epa', 'off_rush_epa', 'off_success', 'off_explosive',
+                      'def_early_pass_epa', 'def_rush_epa', 'def_success', 'def_explosive',
                       'exp_to_margin', 'actual_to_margin']
     
     for c in cols_to_expand:
@@ -118,10 +127,10 @@ def main():
     
     features = [
         'spread_line', 'total_line',
-        'home_off_early_pass_epa', 'home_off_rush_epa', 'home_off_success',
-        'home_def_early_pass_epa', 'home_def_rush_epa', 'home_def_success', 'home_exp_to_margin',
-        'away_off_early_pass_epa', 'away_off_rush_epa', 'away_off_success',
-        'away_def_early_pass_epa', 'away_def_rush_epa', 'away_def_success', 'away_exp_to_margin'
+        'home_off_early_pass_epa', 'home_off_rush_epa', 'home_off_success', 'home_off_explosive',
+        'home_def_early_pass_epa', 'home_def_rush_epa', 'home_def_success', 'home_def_explosive', 'home_exp_to_margin',
+        'away_off_early_pass_epa', 'away_off_rush_epa', 'away_off_success', 'away_off_explosive',
+        'away_def_early_pass_epa', 'away_def_rush_epa', 'away_def_success', 'away_def_explosive', 'away_exp_to_margin'
     ]
     
     X = completed[features].fillna(0)
@@ -136,7 +145,6 @@ def main():
     margin_pipe = Pipeline([('scaler', StandardScaler()), ('model', RidgeCV(cv=tscv))])
     margin_pipe.fit(X, y_margin)
 
-    # Historical Out-of-Sample Logging
     if len(completed) > 50:
         split_idx = int(len(completed) * 0.8)
         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
@@ -158,13 +166,11 @@ def main():
         if os.path.exists(metrics_file):
             try:
                 old_m = pd.read_csv(metrics_file)
-                if 'date' not in old_m.columns:
-                    old_m['date'] = datetime.datetime.now().strftime('%Y-%m-%d')
+                if 'date' not in old_m.columns: old_m['date'] = datetime.datetime.now().strftime('%Y-%m-%d')
                 m_df = pd.concat([old_m, new_metric]).drop_duplicates(subset=['date'], keep='last')
             except Exception:
                 m_df = new_metric
-        else:
-            m_df = new_metric
+        else: m_df = new_metric
         m_df.to_csv(metrics_file, index=False)
 
     # -------------------------------------------------------------------------
@@ -173,8 +179,7 @@ def main():
     latest_metrics = {}
     for t in all_teams:
         curr = team_games[(team_games['season'] == ranking_year) & (team_games['team'] == t)]
-        if not curr.empty:
-            latest_metrics[t] = {c: curr[f'cum_{c}'].iloc[-1] for c in cols_to_expand}
+        if not curr.empty: latest_metrics[t] = {c: curr[f'cum_{c}'].iloc[-1] for c in cols_to_expand}
         else:
             prev = team_games[(team_games['season'] == ranking_year - 1) & (team_games['team'] == t)]
             latest_metrics[t] = {c: prev[f'cum_{c}'].iloc[-1] if not prev.empty else 0.0 for c in cols_to_expand}
@@ -188,9 +193,11 @@ def main():
         mock_game['home_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
         mock_game['home_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
         mock_game['home_off_success'] = latest_metrics[t]['off_success']
+        mock_game['home_off_explosive'] = latest_metrics[t]['off_explosive']
         mock_game['home_def_early_pass_epa'] = latest_metrics[t]['def_early_pass_epa']
         mock_game['home_def_rush_epa'] = latest_metrics[t]['def_rush_epa']
         mock_game['home_def_success'] = latest_metrics[t]['def_success']
+        mock_game['home_def_explosive'] = latest_metrics[t]['def_explosive']
         mock_game['home_exp_to_margin'] = latest_metrics[t]['exp_to_margin']
         
         mock_df = pd.DataFrame([mock_game])[features]
@@ -200,7 +207,6 @@ def main():
     # -------------------------------------------------------------------------
     # PART D: COMPREHENSIVE SEASON PREDICTIONS & AUDIT TRAIL
     # -------------------------------------------------------------------------
-    print("Generating Season Predictions & Audit Ledger...")
     season_games = sched[sched['season'] == current_year].copy()
     playoff_probs = {t: 50.0 for t in all_teams}
     
@@ -211,9 +217,11 @@ def main():
                 season_games.loc[season_games[col] == t, f'{prefix}_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
                 season_games.loc[season_games[col] == t, f'{prefix}_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
                 season_games.loc[season_games[col] == t, f'{prefix}_off_success'] = latest_metrics[t]['off_success']
+                season_games.loc[season_games[col] == t, f'{prefix}_off_explosive'] = latest_metrics[t]['off_explosive']
                 season_games.loc[season_games[col] == t, f'{prefix}_def_early_pass_epa'] = latest_metrics[t]['def_early_pass_epa']
                 season_games.loc[season_games[col] == t, f'{prefix}_def_rush_epa'] = latest_metrics[t]['def_rush_epa']
                 season_games.loc[season_games[col] == t, f'{prefix}_def_success'] = latest_metrics[t]['def_success']
+                season_games.loc[season_games[col] == t, f'{prefix}_def_explosive'] = latest_metrics[t]['def_explosive']
                 season_games.loc[season_games[col] == t, f'{prefix}_exp_to_margin'] = latest_metrics[t]['exp_to_margin']
 
         X_season = season_games[features].fillna(0)
@@ -226,12 +234,9 @@ def main():
         season_games['market_margin'] = -season_games['spread_line']
         season_games['home_edge'] = season_games['model_margin'] - season_games['market_margin'].fillna(0)
         
-        # Save complete audit record (completed + upcoming)
         out_cols = ['game_id', 'season', 'week', 'home_team', 'away_team', 'home_win_prob', 'away_win_prob', 'model_margin', 'market_margin', 'home_edge', 'result']
         season_games[[c for c in out_cols if c in season_games.columns]].to_csv("weekly_predictions.csv", index=False)
-        print("Exported complete audit trail to weekly_predictions.csv.")
 
-        # Monte Carlo Simulation on Remaining Unplayed Games
         upcoming = season_games[season_games['result'].isna()]
         if not upcoming.empty:
             base_wins = {t: 0.0 for t in all_teams}
@@ -249,7 +254,6 @@ def main():
             for i, (h, a) in enumerate(zip(upcoming['home_team'].values, upcoming['away_team'].values)):
                 sim_st[h] += sim_hw[:, i]
                 sim_st[a] += sim_aw[:, i]
-                
             for t in all_teams: sim_st[t] += np.random.rand(n_sims) * 0.1
             
             afc_m = np.array([sim_st[t] for t in [x for x in all_teams if TEAM_CONF.get(x) == 'AFC']])
@@ -266,15 +270,12 @@ def main():
     rank_games_hist = sched[(sched['season'] == ranking_year) & (sched['result'].notna())]
     hist_wins = {t: 0.0 for t in all_teams}
     hist_gms = {t: 0 for t in all_teams}
-    
     for _, g in rank_games_hist.iterrows():
         h, a, res = g['home_team'], g['away_team'], g['result']
-        hist_gms[h] += 1
-        hist_gms[a] += 1
+        hist_gms[h] += 1; hist_gms[a] += 1
         if res > 0: hist_wins[h] += 1.0
         elif res < 0: hist_wins[a] += 1.0
-        else:
-            hist_wins[h] += 0.5; hist_wins[a] += 0.5
+        else: hist_wins[h] += 0.5; hist_wins[a] += 0.5
 
     team_sos = {}
     for t in all_teams:
