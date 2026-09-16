@@ -47,10 +47,9 @@ def main():
     all_teams = sorted(list(set(sched['home_team'].unique()) | set(sched['away_team'].unique())))
 
     # -------------------------------------------------------------------------
-    # PART A: ADVANCED FEATURE ENGINEERING (Early Downs & Fumble Luck)
+    # PART A: ADVANCED FEATURE ENGINEERING
     # -------------------------------------------------------------------------
-    print("Engineering Early-Down EPA & Expected Turnover (Luck-Regressed) metrics...")
-    
+    print("Engineering Early-Down EPA & Expected Turnover metrics...")
     pbp['is_early_pass'] = ((pbp['pass'] == 1) & (pbp['down'].isin([1.0, 2.0]))).astype(int)
     pbp['is_rush'] = (pbp['rush'] == 1).astype(int)
     pbp['success'] = (pbp['epa'] > 0).astype(int)
@@ -58,7 +57,6 @@ def main():
     pbp['early_pass_epa'] = np.where(pbp['is_early_pass'] == 1, pbp['epa'], np.nan)
     pbp['rush_epa'] = np.where(pbp['is_rush'] == 1, pbp['epa'], np.nan)
 
-    # Offense aggregates
     game_off = pbp.groupby(['game_id', 'season', 'week', 'posteam']).agg(
         off_early_pass_epa=('early_pass_epa', 'mean'),
         off_rush_epa=('rush_epa', 'mean'),
@@ -68,7 +66,6 @@ def main():
         off_fumbles_lost=('fumble_lost', 'sum')
     ).reset_index().rename(columns={'posteam': 'team'})
     
-    # Defense aggregates
     game_def = pbp.groupby(['game_id', 'season', 'week', 'defteam']).agg(
         def_early_pass_epa=('early_pass_epa', 'mean'),
         def_rush_epa=('rush_epa', 'mean'),
@@ -80,7 +77,6 @@ def main():
     
     team_games = pd.merge(game_off, game_def, on=['game_id', 'season', 'week', 'team'], how='outer').fillna(0)
     
-    # Expected Turnover Margin (Fumble recoveries normalized to 50/50 expectation)
     team_games['exp_giveaways'] = team_games['off_ints'] + 0.5 * team_games['off_fumbles']
     team_games['exp_takeaways'] = team_games['def_ints'] + 0.5 * team_games['def_fumbles']
     team_games['exp_to_margin'] = team_games['exp_takeaways'] - team_games['exp_giveaways']
@@ -88,7 +84,6 @@ def main():
 
     team_games = team_games.sort_values(['season', 'week']).reset_index(drop=True)
     
-    # Expanding windows with zero-leakage prior shift
     cols_to_expand = ['off_early_pass_epa', 'off_rush_epa', 'off_success',
                       'def_early_pass_epa', 'def_rush_epa', 'def_success',
                       'exp_to_margin', 'actual_to_margin']
@@ -104,7 +99,6 @@ def main():
     for c in cols_to_expand:
         team_games[f'cum_{c}'] = team_games[f'cum_{c}'].fillna(team_games[f'prev_{c}']).fillna(0)
 
-    # Attach features back to schedule
     home_features = team_games[['game_id', 'team'] + [f'cum_{c}' for c in cols_to_expand]].rename(
         columns={'team': 'home_team', **{f'cum_{c}': f'home_{c}' for c in cols_to_expand}})
     away_features = team_games[['game_id', 'team'] + [f'cum_{c}' for c in cols_to_expand]].rename(
@@ -114,9 +108,9 @@ def main():
     sched = pd.merge(sched, away_features, on=['game_id', 'away_team'], how='left')
 
     # -------------------------------------------------------------------------
-    # PART B: TIME-SERIES TUNED MACHINE LEARNING & MARKET DISCREPANCY
+    # PART B: TIME-SERIES TUNED ML
     # -------------------------------------------------------------------------
-    print("Tuning Hyperparameters & Training Market Discrepancy Engine...")
+    print("Tuning Hyperparameters & Training Engine...")
     completed = sched[sched['result'].notna()].copy()
     completed = completed.sort_values(by=['season', 'week']).reset_index(drop=True)
     completed = completed.dropna(subset=['home_off_success', 'away_off_success'])
@@ -136,21 +130,12 @@ def main():
 
     tscv = TimeSeriesSplit(n_splits=5)
 
-    # 1. Win Probability Pipeline
-    prob_pipe = Pipeline([
-        ('scaler', StandardScaler()),
-        ('model', LogisticRegressionCV(Cs=10, cv=tscv, scoring='neg_log_loss', max_iter=1000, random_state=42))
-    ])
+    prob_pipe = Pipeline([('scaler', StandardScaler()), ('model', LogisticRegressionCV(Cs=10, cv=tscv, scoring='neg_log_loss', max_iter=1000, random_state=42))])
     prob_pipe.fit(X, y_prob)
 
-    # 2. Market Discrepancy Margin Pipeline
-    margin_pipe = Pipeline([
-        ('scaler', StandardScaler()),
-        ('model', RidgeCV(cv=tscv))
-    ])
+    margin_pipe = Pipeline([('scaler', StandardScaler()), ('model', RidgeCV(cv=tscv))])
     margin_pipe.fit(X, y_margin)
 
-    # Out-of-Sample Performance Logging (Appends over time)
     if len(completed) > 50:
         split_idx = int(len(completed) * 0.8)
         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
@@ -179,11 +164,10 @@ def main():
                 m_df = new_metric
         else:
             m_df = new_metric
-            
         m_df.to_csv(metrics_file, index=False)
 
     # -------------------------------------------------------------------------
-    # PART C: DYNAMIC TEAM POWER RATINGS (EVALUATED VS AVERAGE TEAM)
+    # PART C: DYNAMIC TEAM POWER RATINGS
     # -------------------------------------------------------------------------
     print("Projecting True Team Power Ratings via Margin Regression...")
     latest_metrics = {}
@@ -216,45 +200,35 @@ def main():
         ratings[t] = 1500.0 + (expected_pt_diff * (400.0 / 14.0)) 
 
     # -------------------------------------------------------------------------
-    # PART D: PREDICT MATCHUPS & CALCULATE MARKET EDGE
+    # PART D: PREDICT MATCHUPS
     # -------------------------------------------------------------------------
     upcoming = sched[(sched['season'] == current_year) & (sched['result'].isna())].copy()
-    
     playoff_probs = {t: 50.0 for t in all_teams}
     if not upcoming.empty:
         for t in all_teams:
             upcoming[f'home_{t}'] = upcoming['home_team'] == t
-            upcoming.loc[upcoming['home_team'] == t, 'home_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
-            upcoming.loc[upcoming['home_team'] == t, 'home_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
-            upcoming.loc[upcoming['home_team'] == t, 'home_off_success'] = latest_metrics[t]['off_success']
-            upcoming.loc[upcoming['home_team'] == t, 'home_def_early_pass_epa'] = latest_metrics[t]['def_early_pass_epa']
-            upcoming.loc[upcoming['home_team'] == t, 'home_def_rush_epa'] = latest_metrics[t]['def_rush_epa']
-            upcoming.loc[upcoming['home_team'] == t, 'home_def_success'] = latest_metrics[t]['def_success']
-            upcoming.loc[upcoming['home_team'] == t, 'home_exp_to_margin'] = latest_metrics[t]['exp_to_margin']
-            
-            upcoming.loc[upcoming['away_team'] == t, 'away_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
-            upcoming.loc[upcoming['away_team'] == t, 'away_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
-            upcoming.loc[upcoming['away_team'] == t, 'away_off_success'] = latest_metrics[t]['off_success']
-            upcoming.loc[upcoming['away_team'] == t, 'away_def_early_pass_epa'] = latest_metrics[t]['def_early_pass_epa']
-            upcoming.loc[upcoming['away_team'] == t, 'away_def_rush_epa'] = latest_metrics[t]['def_rush_epa']
-            upcoming.loc[upcoming['away_team'] == t, 'away_def_success'] = latest_metrics[t]['def_success']
-            upcoming.loc[upcoming['away_team'] == t, 'away_exp_to_margin'] = latest_metrics[t]['exp_to_margin']
+            for prefix, home_away in [('home', 'home_team'), ('away', 'away_team')]:
+                upcoming.loc[upcoming[home_away] == t, f'{prefix}_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
+                upcoming.loc[upcoming[home_away] == t, f'{prefix}_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
+                upcoming.loc[upcoming[home_away] == t, f'{prefix}_off_success'] = latest_metrics[t]['off_success']
+                upcoming.loc[upcoming[home_away] == t, f'{prefix}_def_early_pass_epa'] = latest_metrics[t]['def_early_pass_epa']
+                upcoming.loc[upcoming[home_away] == t, f'{prefix}_def_rush_epa'] = latest_metrics[t]['def_rush_epa']
+                upcoming.loc[upcoming[home_away] == t, f'{prefix}_def_success'] = latest_metrics[t]['def_success']
+                upcoming.loc[upcoming[home_away] == t, f'{prefix}_exp_to_margin'] = latest_metrics[t]['exp_to_margin']
 
         X_upcoming = upcoming[features].fillna(0)
         
-        # Win Probabilities
         probs = prob_pipe.predict_proba(X_upcoming)
         upcoming['home_win_prob'] = probs[:, 1]
         upcoming['away_win_prob'] = probs[:, 0]
         
-        # Discrepancy Engine (Positive spread_line in nflverse represents home margin)
+        # POLARITY FIX: Market expects a home point margin equal to the inverse of the Vegas spread line.
         upcoming['model_margin'] = margin_pipe.predict(X_upcoming)
-        upcoming['market_margin'] = upcoming['spread_line'].fillna(0)
+        upcoming['market_margin'] = -upcoming['spread_line'].fillna(0)
         upcoming['home_edge'] = upcoming['model_margin'] - upcoming['market_margin']
         
         upcoming[['game_id', 'season', 'week', 'home_team', 'away_team', 'home_win_prob', 'away_win_prob', 'model_margin', 'market_margin', 'home_edge']].to_csv("weekly_predictions.csv", index=False)
 
-        # 10,000 Iteration Monte Carlo Simulation
         base_wins = {t: 0.0 for t in all_teams}
         for _, g in sched[(sched['season'] == current_year) & (sched['result'].notna())].iterrows():
             if g['result'] > 0: base_wins[g['home_team']] += 1.0
@@ -275,7 +249,6 @@ def main():
         
         afc_m = np.array([sim_st[t] for t in [x for x in all_teams if TEAM_CONF.get(x) == 'AFC']])
         nfc_m = np.array([sim_st[t] for t in [x for x in all_teams if TEAM_CONF.get(x) == 'NFC']])
-        
         afc_p = afc_m >= np.partition(afc_m, -7, axis=0)[-7, :]
         nfc_p = nfc_m >= np.partition(nfc_m, -7, axis=0)[-7, :]
         
@@ -296,8 +269,7 @@ def main():
         if res > 0: hist_wins[h] += 1.0
         elif res < 0: hist_wins[a] += 1.0
         else:
-            hist_wins[h] += 0.5
-            hist_wins[a] += 0.5
+            hist_wins[h] += 0.5; hist_wins[a] += 0.5
 
     team_sos = {}
     for t in all_teams:
