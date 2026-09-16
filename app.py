@@ -69,8 +69,6 @@ def load_team_data():
             if "abbr" in rank_df.columns:
                 rank_df["abbr"] = rank_df["abbr"].replace(NFL_ABBR_MAP)
                 update_cols = [c for c in ["Off", "Def", "TO", "SOS", "Rating", "BasePlayoff"] if c in rank_df.columns]
-                
-                # Non-destructive merge preserving abbr column and fallbacks
                 merged = pd.merge(df, rank_df[["abbr"] + update_cols], on="abbr", how="left", suffixes=("", "_new"))
                 for col in update_cols:
                     new_col = f"{col}_new"
@@ -88,10 +86,11 @@ def load_team_data():
 df_teams = load_team_data()
 team_dict = df_teams.set_index("abbr").to_dict("index")
 
-# 2. Live Team Injury & Vitals Feed
+# 2. Live Team Injury & Breaking News Feed
 @st.cache_data(ttl=3600)
 def load_team_news(team_abbr, year):
-    news_items = []
+    results = {'injuries': [], 'news': []}
+    
     try:
         injuries = nfl.import_injuries([year])
         if 'team' in injuries.columns:
@@ -100,24 +99,67 @@ def load_team_news(team_abbr, year):
         
         if not team_injuries.empty:
             latest_week = team_injuries['week'].max()
-            current_inj = team_injuries[(team_injuries['week'] == latest_week) & (team_injuries['report_status'].notna())]
+            current_inj = team_injuries[team_injuries['week'] == latest_week].copy()
+            
+            def status_rank(row):
+                stat = str(row.get('report_status', '')).upper()
+                prac = str(row.get('practice_status', '')).upper()
+                if 'OUT' in stat or 'IR' in stat: return 1
+                if 'DOUBTFUL' in stat: return 2
+                if 'QUESTIONABLE' in stat: return 3
+                if 'DNP' in prac or 'DID NOT PARTICIPATE' in prac: return 4
+                if 'LP' in prac or 'LIMITED' in prac: return 5
+                return 6
+                
+            current_inj['rank'] = current_inj.apply(status_rank, axis=1)
+            current_inj = current_inj.sort_values('rank')
             
             for _, row in current_inj.iterrows():
                 player = row.get('full_name', 'Unknown')
                 position = row.get('position', '')
-                status = row.get('report_status', '')
-                injury = row.get('report_primary_injury', 'Undisclosed')
-                news_items.append(f"🏥 **{player} ({position}):** {status} ({injury})")
+                
+                r_stat = row.get('report_status')
+                p_stat = row.get('practice_status')
+                
+                if pd.notna(r_stat) and str(r_stat).strip() != "":
+                    status = str(r_stat).title()
+                elif pd.notna(p_stat) and str(p_stat).strip() != "":
+                    status = f"Practice: {str(p_stat)}"
+                else:
+                    status = "Injured Reserve / Out"
+                    
+                injury = row.get('report_primary_injury')
+                if pd.isna(injury) or str(injury).strip() == "": 
+                    injury = row.get('practice_primary_injury', 'Undisclosed')
+                
+                if 'Full' not in status and 'FP' not in status:
+                    results['injuries'].append(f"**{position} {player}:** {status} ({injury})")
     except Exception:
         pass
 
-    if not news_items:
-        news_items.append("✅ No active game-status injury designations reported this week.")
+    if not results['injuries']:
+        results['injuries'].append("✅ No active impact injuries reported.")
         
-    return news_items
+    try:
+        espn_abbr = 'WSH' if team_abbr == 'WAS' else team_abbr
+        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{espn_abbr}/news"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        articles = data.get('articles', [])
+        for art in articles[:6]: 
+            headline = art.get('headline', '')
+            link = art.get('links', {}).get('web', {}).get('href', '#')
+            results['news'].append(f"📰 [{headline}]({link})")
+    except Exception:
+        pass
+        
+    if not results['news']:
+        results['news'].append("No breaking team headlines right now.")
+        
+    return results
 
 # 3. Fetch Official Schedules
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_official_schedules():
     try:
         sched_df = nfl.import_schedules([CURRENT_YEAR])
@@ -129,7 +171,7 @@ def load_official_schedules():
         return pd.DataFrame()
 official_schedule = load_official_schedules()
 
-# 4. Fetch Live Stadium Weather (Open-Meteo API)
+# 4. Fetch Live Stadium Weather
 @st.cache_data(ttl=900)
 def get_live_stadium_weather(lat, lon, roof_type):
     if "Dome" in str(roof_type) or "Retractable" in str(roof_type):
@@ -263,9 +305,18 @@ with st.sidebar.expander("🏟️ Stadium & Facility Profile", expanded=False):
     st.markdown(f"**Capacity:** `{int(team_df_row.get('capacity', 0)):,} seats`")
 
 with st.sidebar.expander("📰 Live Team Vitals & News", expanded=False):
-    news_list = load_team_news(selected_abbr, CURRENT_YEAR)
-    for item in news_list:
-        st.markdown(f"- {item}")
+    news_dict = load_team_news(selected_abbr, CURRENT_YEAR)
+    t1, t2 = st.tabs(["🏥 Injuries", "📰 Headlines"])
+    
+    with t1:
+        with st.container(height=220):
+            for item in news_dict['injuries']:
+                st.markdown(f"- {item}")
+                
+    with t2:
+        with st.container(height=220):
+            for item in news_dict['news']:
+                st.markdown(f"- {item}")
 
 # Sliding Scale Simulation Modifiers
 st.sidebar.markdown("---")
@@ -277,7 +328,6 @@ wea_val = st.sidebar.slider("Weather Severity", 0, 10, 0)
 st.sidebar.markdown("**3. Travel Fatigue Multiplier (0-10):**\n> *Amplifies long-distance flight fatigue.*")
 trv_val = st.sidebar.slider("Travel Fatigue Multiplier", 0, 10, 0)
 
-# Playoff Odds Engine
 def calculate_adjusted_playoff(row, current_abbr, inj, wea, trv):
     try:
         base = float(row.get("BasePlayoff", 50.0))
@@ -312,7 +362,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             opp_info = team_dict.get(opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "surface": "Unknown", "roof": "Unknown", "Rating": 1500})
             opp_name = opp_info.get("team", opp_abbr)
             
-            # Neutral International Game Coordinates
             international_games = {
                 (1, "LAR", "SF"): {"stadium": "Melbourne Cricket Ground (Australia)", "lat": -37.8199, "lon": 144.9834, "surface": "Hybrid Grass", "roof": "Open / Outdoor"},
                 (3, "DAL", "BAL"): {"stadium": "Maracanã Stadium (Brazil)", "lat": -22.9121, "lon": -43.2301, "surface": "Bermuda Grass", "roof": "Open / Outdoor"},
@@ -352,7 +401,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             st.markdown(f"🌱 **Field Surface:** `{dest_surface}`")
             st.markdown(f"✈️ **Flight Distance:** `{travel_distance_miles:,.1f} miles`" if travel_distance_miles > 0 else "🏠 **No Travel Required**")
             
-            # Live Weather
             live_weather = get_live_stadium_weather(target_lat_weather, target_lon_weather, dest_roof)
             st.markdown(f"🌤️ **Live Stadium Weather:** `{live_weather['temp']}°F | {live_weather['wind']} mph wind | {live_weather['condition']}`")
                 
@@ -364,9 +412,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
 
             apply_live_weather = st.checkbox("Inject live weather penalty into odds", value=False, help="Overrides manual weather slider and feeds the real-time API penalty directly into the log-odds.")
 
-            # ---------------------------------------------------------
-            # STRICT ZERO-SUM BILATERAL PROBABILITY ENGINE
-            # ---------------------------------------------------------
             ml_file = "weekly_predictions.csv"
             used_ml = False
             raw_home_prob = 0.50
@@ -393,38 +438,28 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 raw_home_prob = 1.0 / (10.0 ** (-diff / 400.0) + 1.0)
                 st.caption("🧮 *Baseline odds: Elo Zero-Sum Engine*")
 
-            # Convert to Log-Odds
             raw_home_prob = max(0.01, min(0.99, raw_home_prob))
             home_log_odds = math.log(raw_home_prob / (1.0 - raw_home_prob))
             
             active_wea_val = live_weather['penalty'] if apply_live_weather else wea_val
             
-            # Calculate Away Flight Distance Bilaterally
             away_lat = team_dict.get(away_abbr, {}).get("lat", target_lat_weather)
             away_lon = team_dict.get(away_abbr, {}).get("lon", target_lon_weather)
             actual_away_flight = calculate_travel_distance(away_lat, away_lon, target_lat_weather, target_lon_weather) if not is_international else 0.0
             
-            # Bilateral Stress-Test Modifiers
             dist_penalty = (min(actual_away_flight, 3000) / 500.0) * 0.08 * (1.0 + trv_val * 0.15) if actual_away_flight > 0 else 0.0
-            
-            # Active Team Selection Shift
             inj_shift = (inj_val * 0.08) if not is_home else -(inj_val * 0.08)
             wea_shift = (active_wea_val * 0.03) if (any(term in away_usual_roof for term in ["Dome", "Retractable"]) and "Open" in dest_roof) else 0.0
             
-            # Shift Home Log-Odds
             net_home_advantage_shift = dist_penalty + inj_shift + wea_shift
             adj_home_log_odds = home_log_odds + net_home_advantage_shift
             
-            # Guaranteed 100% Zero-Sum Probabilities
             adj_home_prob = round((1.0 / (1.0 + math.exp(-adj_home_log_odds))) * 100.0, 1)
             adj_away_prob = round(100.0 - adj_home_prob, 1)
 
             win_prob = adj_home_prob if is_home else adj_away_prob
             st.metric(label="Adjusted Matchup Win Likelihood", value=f"{win_prob}%")
 
-            # ---------------------------------------------------------
-            # MARKET DISCREPANCY & SPREAD EDGE DRAWER
-            # ---------------------------------------------------------
             if used_ml and not game_match.empty and 'model_margin' in game_match.columns:
                 m_row = game_match.iloc[0]
                 model_margin = m_row.get('model_margin', None)
@@ -433,12 +468,10 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
 
                 if pd.notna(model_margin) and pd.notna(market_margin) and pd.notna(home_edge):
                     with st.expander("💰 Market Discrepancy & Spread Edge", expanded=True):
-                        # Convert margins to perspective of currently selected team
                         team_model_margin = float(model_margin if is_home else -model_margin)
                         team_market_margin = float(market_margin if is_home else -market_margin)
                         team_edge = float(home_edge if is_home else -home_edge)
 
-                        # Convert raw point margins to standard Sportsbook Spreads
                         team_market_spread = -team_market_margin
                         team_model_spread = -team_model_margin
 
@@ -457,7 +490,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                             help="How much mathematical value this team has against the Vegas line."
                         )
 
-                        # Plain English Dynamic Translator
                         favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
                         st.markdown("---")
                         
@@ -471,7 +503,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                                     logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a much closer game (losing by only {team_model_spread:.1f})."
                                 elif team_market_spread <= 0 and team_model_spread < 0:
                                     logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by an even larger blowout ({abs(team_model_spread):.1f})."
-                            else: # team_edge < 0
+                            else: 
                                 if team_market_spread <= 0 and team_model_spread > 0:
                                     logic_text = f"Vegas expects the {st.session_state.selected_team} to be favorites (-{abs(team_market_spread):.1f}), but the model expects an outright **UPSET loss** (losing by {team_model_spread:.1f})."
                                 elif team_market_spread <= 0 and team_model_spread <= 0:
@@ -481,10 +513,8 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
 
                             icon = "🔥" if edge_val >= 2.0 else "💡"
                             bold_alert = "**Actionable Edge:** " if edge_val >= 2.0 else "**How to read this:** "
-                            
                             st.caption(f"{icon} {bold_alert}{logic_text} Therefore, the model identifies **{edge_val:.1f} points of betting value** on the **{favored_team}**.")
 
-# 6. Dynamic Live Game Tracker
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"📡 Week {selected_week} Game Tracker")
 
@@ -512,7 +542,6 @@ else:
     st.sidebar.progress(safe_progress_val(win_prob))
     st.sidebar.caption("⚡ *Live play-by-play and win probability will stream here automatically at kickoff.*")
 
-# 7. Model Performance & Calibration Charts (Historical)
 st.markdown("---")
 metrics_file = "model_metrics.csv"
 acc, brier, ll = 65.4, 0.215, 0.612
@@ -547,7 +576,6 @@ if 'm_df' in locals() and 'date' in m_df.columns and len(m_df) > 1:
         m_df['Accuracy %'] = m_df['accuracy'] * 100.0
         st.line_chart(m_df.set_index('date')[['Accuracy %']])
 
-# 8. Folium Map
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 for _, row in df_teams.iterrows():
     icon = folium.CustomIcon(row["logo_url"], icon_size=(35, 35))
@@ -573,9 +601,14 @@ if not official_schedule.empty:
         ats_records = []
         for _, r in team_past_games.iterrows():
             is_h = r["home_team"] == selected_abbr
+            
+            # Result is Home Score - Away Score. Positive means Home won.
             act_margin = r["result"] if is_h else -r["result"]
-            exp_margin = r["spread_line"] if pd.notna(r["spread_line"]) else 0.0
-            exp_margin = exp_margin if is_h else -exp_margin
+            
+            # spread_line in nflverse is negative for Home favorites.
+            # So the expected home point margin is -spread_line.
+            home_expected_margin = -r["spread_line"] if pd.notna(r["spread_line"]) else 0.0
+            exp_margin = home_expected_margin if is_h else -home_expected_margin
             
             ats_diff = act_margin - exp_margin
             
