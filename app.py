@@ -117,7 +117,6 @@ def load_team_news(team_abbr, year):
             for _, row in current_inj.iterrows():
                 player = row.get('full_name', 'Unknown')
                 position = row.get('position', '')
-                
                 r_stat = row.get('report_status')
                 p_stat = row.get('practice_status')
                 
@@ -189,10 +188,8 @@ def get_live_stadium_weather(lat, lon, roof_type):
         penalty = 0.0
         if temp < 32: penalty += 3.0
         elif temp < 40: penalty += 1.0
-        
         if wind > 20: penalty += 4.0
         elif wind > 15: penalty += 2.0
-        
         if precip > 0.05: penalty += 3.0
         
         condition = "Clear / Fair"
@@ -265,7 +262,7 @@ def calculate_travel_distance(lat1, lon1, lat2, lon2):
     a = (math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
     return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
 
-# App State & Sidebar Setup
+# App State & Sidebar
 if "selected_team" not in st.session_state:
     st.session_state.selected_team = "Kansas City Chiefs"
 
@@ -307,18 +304,16 @@ with st.sidebar.expander("🏟️ Stadium & Facility Profile", expanded=False):
 with st.sidebar.expander("📰 Live Team Vitals & News", expanded=False):
     news_dict = load_team_news(selected_abbr, CURRENT_YEAR)
     t1, t2 = st.tabs(["🏥 Injuries", "📰 Headlines"])
-    
     with t1:
         with st.container(height=220):
             for item in news_dict['injuries']:
                 st.markdown(f"- {item}")
-                
     with t2:
         with st.container(height=220):
             for item in news_dict['news']:
                 st.markdown(f"- {item}")
 
-# Sliding Scale Simulation Modifiers
+# Manual Forecast Controls
 st.sidebar.markdown("---")
 st.sidebar.subheader("Manual Forecast Controls")
 st.sidebar.markdown("**1. Injury Attrition Severity (0-10):**\n> *Simulate key starter / depth losses.*")
@@ -466,11 +461,11 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 market_margin = m_row.get('market_margin', None)
                 home_edge = m_row.get('home_edge', None)
 
-                if pd.notna(model_margin) and pd.notna(market_margin) and pd.notna(home_edge):
+                if pd.notna(model_margin):
                     with st.expander("💰 Market Discrepancy & Spread Edge", expanded=True):
                         team_model_margin = float(model_margin if is_home else -model_margin)
-                        team_market_margin = float(market_margin if is_home else -market_margin)
-                        team_edge = float(home_edge if is_home else -home_edge)
+                        team_market_margin = float(market_margin if is_home else -market_margin) if pd.notna(market_margin) else 0.0
+                        team_edge = float(home_edge if is_home else -home_edge) if pd.notna(home_edge) else 0.0
 
                         team_market_spread = -team_market_margin
                         team_model_spread = -team_model_margin
@@ -479,48 +474,44 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                             return "PK" if round(val, 1) == 0.0 else f"{val:+.1f}"
 
                         c1, c2, c3 = st.columns(3)
-                        c1.metric("Market Spread", format_spread(team_market_spread), help="Consensus Vegas spread.")
+                        c1.metric("Market Spread", format_spread(team_market_spread) if pd.notna(market_margin) else "N/A", help="Consensus Vegas spread.")
                         c2.metric("Model Spread", format_spread(team_model_spread), help="Where the model thinks the spread should be.")
                         
                         edge_val = abs(team_edge)
                         c3.metric(
                             "Hidden Value", 
-                            f"{edge_val:.1f} pts", 
-                            delta=f"{team_edge:+.1f} for {st.session_state.selected_team}",
+                            f"{edge_val:.1f} pts" if pd.notna(market_margin) else "N/A", 
+                            delta=f"{team_edge:+.1f} for {st.session_state.selected_team}" if pd.notna(market_margin) else None,
                             help="How much mathematical value this team has against the Vegas line."
                         )
-
-                        # BRAND NEW: Visual Bar Chart Indicator for the Model vs Vegas Expectation
-                        st.markdown("**Spread Comparison Indicator**")
-                        comp_df = pd.DataFrame({
-                            "Points": [team_market_spread, team_model_spread]
-                        }, index=["Vegas Spread", "Model Spread"])
-                        st.bar_chart(comp_df, height=150, color="#1f77b4")
 
                         favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
                         st.markdown("---")
                         
-                        if round(edge_val, 1) == 0.0:
-                            st.caption("⚖️ **Perfect Agreement:** The model and the sportsbooks project the exact same margin.")
-                        else:
-                            if team_edge > 0:
-                                if team_market_spread > 0 and team_model_spread <= 0:
-                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to be underdogs (+{team_market_spread:.1f}), but the model expects an outright **UPSET victory** (winning by {abs(team_model_spread):.1f})."
-                                elif team_market_spread > 0 and team_model_spread > 0:
-                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a much closer game (losing by only {team_model_spread:.1f})."
-                                elif team_market_spread <= 0 and team_model_spread < 0:
-                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by an even larger blowout ({abs(team_model_spread):.1f})."
-                            else: 
-                                if team_market_spread <= 0 and team_model_spread > 0:
-                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to be favorites (-{abs(team_market_spread):.1f}), but the model expects an outright **UPSET loss** (losing by {team_model_spread:.1f})."
-                                elif team_market_spread <= 0 and team_model_spread <= 0:
-                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model thinks it will be a much closer game (winning by only {abs(team_model_spread):.1f})."
-                                elif team_market_spread > 0 and team_model_spread > 0:
-                                    logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model expects them to get beat even worse (losing by {team_model_spread:.1f})."
+                        if pd.notna(market_margin):
+                            if round(edge_val, 1) == 0.0:
+                                st.caption("⚖️ **Perfect Agreement:** The model and the sportsbooks project the exact same margin.")
+                            else:
+                                if team_edge > 0:
+                                    if team_market_spread > 0 and team_model_spread <= 0:
+                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to be underdogs (+{team_market_spread:.1f}), but the model expects an outright **UPSET victory** (winning by {abs(team_model_spread):.1f})."
+                                    elif team_market_spread > 0 and team_model_spread > 0:
+                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a much closer game (losing by only {team_model_spread:.1f})."
+                                    elif team_market_spread <= 0 and team_model_spread < 0:
+                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by an even larger blowout ({abs(team_model_spread):.1f})."
+                                else: 
+                                    if team_market_spread <= 0 and team_model_spread > 0:
+                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to be favorites (-{abs(team_market_spread):.1f}), but the model expects an outright **UPSET loss** (losing by {team_model_spread:.1f})."
+                                    elif team_market_spread <= 0 and team_model_spread <= 0:
+                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model thinks it will be a much closer game (winning by only {abs(team_model_spread):.1f})."
+                                    elif team_market_spread > 0 and team_model_spread > 0:
+                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model expects them to get beat even worse (losing by {team_model_spread:.1f})."
 
-                            icon = "🔥" if edge_val >= 2.0 else "💡"
-                            bold_alert = "**Actionable Edge:** " if edge_val >= 2.0 else "**How to read this:** "
-                            st.caption(f"{icon} {bold_alert}{logic_text} Therefore, the model identifies **{edge_val:.1f} points of betting value** on the **{favored_team}**.")
+                                icon = "🔥" if edge_val >= 2.0 else "💡"
+                                bold_alert = "**Actionable Edge:** " if edge_val >= 2.0 else "**How to read this:** "
+                                st.caption(f"{icon} {bold_alert}{logic_text} Therefore, the model identifies **{edge_val:.1f} points of betting value** on the **{favored_team}**.")
+                        else:
+                            st.caption("Consensus Vegas spread line is not yet released for this matchup.")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"📡 Week {selected_week} Game Tracker")
@@ -561,7 +552,6 @@ if os.path.exists(metrics_file):
         acc = round(latest_m['accuracy'] * 100.0, 1)
         brier = round(latest_m['brier_score'], 3)
         ll = round(latest_m['log_loss'], 3)
-        
         mtime = datetime.datetime.fromtimestamp(os.path.getmtime(metrics_file))
         freshness_label = f"Last Pipeline Run: {mtime.strftime('%b %d, %Y %H:%M UTC')}"
     except Exception:
@@ -596,46 +586,82 @@ if output and output.get("last_object_clicked_tooltip"):
         st.session_state.selected_team = clicked_name
         st.rerun()
 
-# 9. Team Performance vs Expectations (ATS Historical Graph)
+# -------------------------------------------------------------------------
+# 9. TRUE MODEL AUDIT: MODEL PROJECTION VS. ACTUAL REALITY
+# -------------------------------------------------------------------------
 st.markdown("---")
-st.subheader(f"📈 {st.session_state.selected_team} Performance vs. Vegas Expectations")
+st.subheader(f"🎯 Model Calibration & Accuracy Audit: {st.session_state.selected_team}")
 
-if not official_schedule.empty:
-    # Safely isolate completed games from the current season only
-    team_past_games = official_schedule[
-        ((official_schedule["home_team"] == selected_abbr) | (official_schedule["away_team"] == selected_abbr)) &
-        (official_schedule["season"] == CURRENT_YEAR)
-    ]
-    team_past_games = team_past_games[team_past_games["result"].notna()].sort_values("week")
-    
-    if not team_past_games.empty:
-        ats_records = []
-        for _, r in team_past_games.iterrows():
-            # FIXED: If nflverse hasn't published the official closing line yet, skip it so we don't graph fake blowouts
-            if pd.isna(r["spread_line"]):
-                continue 
+ml_file = "weekly_predictions.csv"
+audit_done = False
+
+if os.path.exists(ml_file):
+    try:
+        audit_raw = pd.read_csv(ml_file)
+        audit_raw['home_team'] = audit_raw['home_team'].replace(NFL_ABBR_MAP)
+        audit_raw['away_team'] = audit_raw['away_team'].replace(NFL_ABBR_MAP)
+        
+        # Isolate completed games for this team
+        t_games = audit_raw[
+            ((audit_raw['home_team'] == selected_abbr) | (audit_raw['away_team'] == selected_abbr)) &
+            (audit_raw['result'].notna())
+        ].sort_values('week')
+        
+        if not t_games.empty:
+            audit_records = []
+            model_errors = []
+            vegas_errors = []
+            
+            for _, r in t_games.iterrows():
+                is_h = r['home_team'] == selected_abbr
+                actual_margin = float(r['result'] if is_h else -r['result'])
+                model_proj = float(r['model_margin'] if is_h else -r['model_margin'])
                 
-            is_h = r["home_team"] == selected_abbr
+                # Check if Vegas market margin is present
+                vegas_proj = float(r['market_margin'] if is_h else -r['market_margin']) if pd.notna(r.get('market_margin')) else None
+                
+                m_err = abs(actual_margin - model_proj)
+                model_errors.append(m_err)
+                
+                row_entry = {
+                    "Week": f"Wk {int(r['week'])}",
+                    "Actual Final Margin": round(actual_margin, 1),
+                    "Model Projected Margin": round(model_proj, 1)
+                }
+                
+                if vegas_proj is not None:
+                    row_entry["Vegas Line"] = round(vegas_proj, 1)
+                    vegas_errors.append(abs(actual_margin - vegas_proj))
+                    
+                audit_records.append(row_entry)
+                
+            audit_df = pd.DataFrame(audit_records)
             
-            # Result is Home Score - Away Score. Positive means Home won.
-            act_margin = r["result"] if is_h else -r["result"]
+            # Scorecard Metrics
+            mean_model_err = sum(model_errors) / len(model_errors)
+            mean_vegas_err = (sum(vegas_errors) / len(vegas_errors)) if vegas_errors else None
             
-            # nflverse correctly stores spread_line as the Expected Home Margin (Positive = Home is favored)
-            home_expected_margin = r["spread_line"]
-            exp_margin = home_expected_margin if is_h else -home_expected_margin
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Games Audited", f"{len(model_errors)} Game(s)")
+            c2.metric("Model Mean Error", f"±{mean_model_err:.1f} pts", help="Average difference between your model's projected margin and reality. Closer to 0 is better.")
+            if mean_vegas_err is not None:
+                diff = mean_vegas_err - mean_model_err
+                c3.metric(
+                    "Model vs. Vegas Accuracy", 
+                    f"{'Outperforming' if diff >= 0 else 'Trailing'} Vegas", 
+                    delta=f"{diff:+.1f} pts precision"
+                )
+            else:
+                c3.metric("Model vs. Vegas Accuracy", "Awaiting Vegas lines")
+                
+            st.markdown("**Weekly Point Margins: Model vs. Reality**")
+            chart_data = audit_df.set_index("Week")
+            st.bar_chart(chart_data)
             
-            ats_diff = act_margin - exp_margin
-            
-            ats_records.append({
-                "Week": f"Wk {int(r['week'])}",
-                "Performance vs Expectation (Pts)": round(ats_diff, 1)
-            })
-            
-        if ats_records:
-            ats_df = pd.DataFrame(ats_records)
-            st.bar_chart(ats_df.set_index("Week"), color="#1f77b4")
-            st.caption("Positive bars indicate the team outperformed Vegas spread expectations (they covered the spread); negative bars indicate underperformance. A team consistently hitting positive bars is being consistently undervalued by the betting market.")
-        else:
-            st.info("Waiting for official Vegas closing lines to be published to the database for completed games.")
-    else:
-        st.info("Regular season performance data will populate here dynamically after Week 1 is officially completed.")
+            st.caption("This chart displays your model's exact projected point margin versus the actual outcome. Bars that closely match indicate an accurate projection. If your model's mean error stays under 3.5 points, your predictive features are well-calibrated.")
+            audit_done = True
+    except Exception as e:
+        pass
+
+if not audit_done:
+    st.info(f"Model audit data for the {st.session_state.selected_team} will populate here once completed game results are processed by the pipeline.")
