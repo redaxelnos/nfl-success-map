@@ -24,7 +24,6 @@ st.markdown(
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 
-# 1. Complete 32-Team Dataset
 def load_team_data():
     base_data = [
         {"team": "Arizona Cardinals", "abbr": "ARI", "lat": 33.5276, "lon": -112.2626, "stadium": "State Farm Stadium", "surface": "Bermuda Grass", "roof": "Retractable Roof", "capacity": 63400, "Off": 18, "Def": 22, "SOS": ".536", "TO": -2, "BasePlayoff": 32.0, "Rating": 1500},
@@ -86,21 +85,16 @@ def load_team_data():
 df_teams = load_team_data()
 team_dict = df_teams.set_index("abbr").to_dict("index")
 
-# 2. Live Team Injury & Breaking News Feed
 @st.cache_data(ttl=3600)
 def load_team_news(team_abbr, year):
     results = {'injuries': [], 'news': []}
-    
     try:
         injuries = nfl.import_injuries([year])
-        if 'team' in injuries.columns:
-            injuries['team'] = injuries['team'].replace(NFL_ABBR_MAP)
+        if 'team' in injuries.columns: injuries['team'] = injuries['team'].replace(NFL_ABBR_MAP)
         team_injuries = injuries[injuries['team'] == team_abbr]
-        
         if not team_injuries.empty:
             latest_week = team_injuries['week'].max()
             current_inj = team_injuries[team_injuries['week'] == latest_week].copy()
-            
             def status_rank(row):
                 stat = str(row.get('report_status', '')).upper()
                 prac = str(row.get('practice_status', '')).upper()
@@ -110,34 +104,22 @@ def load_team_news(team_abbr, year):
                 if 'DNP' in prac or 'DID NOT PARTICIPATE' in prac: return 4
                 if 'LP' in prac or 'LIMITED' in prac: return 5
                 return 6
-                
             current_inj['rank'] = current_inj.apply(status_rank, axis=1)
             current_inj = current_inj.sort_values('rank')
-            
             for _, row in current_inj.iterrows():
                 player = row.get('full_name', 'Unknown')
                 position = row.get('position', '')
                 r_stat = row.get('report_status')
                 p_stat = row.get('practice_status')
-                
-                if pd.notna(r_stat) and str(r_stat).strip() != "":
-                    status = str(r_stat).title()
-                elif pd.notna(p_stat) and str(p_stat).strip() != "":
-                    status = f"Practice: {str(p_stat)}"
-                else:
-                    status = "Injured Reserve / Out"
-                    
+                if pd.notna(r_stat) and str(r_stat).strip() != "": status = str(r_stat).title()
+                elif pd.notna(p_stat) and str(p_stat).strip() != "": status = f"Practice: {str(p_stat)}"
+                else: status = "Injured Reserve / Out"
                 injury = row.get('report_primary_injury')
-                if pd.isna(injury) or str(injury).strip() == "": 
-                    injury = row.get('practice_primary_injury', 'Undisclosed')
-                
+                if pd.isna(injury) or str(injury).strip() == "": injury = row.get('practice_primary_injury', 'Undisclosed')
                 if 'Full' not in status and 'FP' not in status:
                     results['injuries'].append(f"**{position} {player}:** {status} ({injury})")
-    except Exception:
-        pass
-
-    if not results['injuries']:
-        results['injuries'].append("✅ No active impact injuries reported.")
+    except Exception: pass
+    if not results['injuries']: results['injuries'].append("✅ No active impact injuries reported.")
         
     try:
         espn_abbr = 'WSH' if team_abbr == 'WAS' else team_abbr
@@ -149,15 +131,10 @@ def load_team_news(team_abbr, year):
             headline = art.get('headline', '')
             link = art.get('links', {}).get('web', {}).get('href', '#')
             results['news'].append(f"📰 [{headline}]({link})")
-    except Exception:
-        pass
-        
-    if not results['news']:
-        results['news'].append("No breaking team headlines right now.")
-        
+    except Exception: pass
+    if not results['news']: results['news'].append("No breaking team headlines right now.")
     return results
 
-# 3. Fetch Official Schedules
 @st.cache_data(ttl=3600)
 def load_official_schedules():
     try:
@@ -170,38 +147,29 @@ def load_official_schedules():
         return pd.DataFrame()
 official_schedule = load_official_schedules()
 
-# 4. Fetch Live Stadium Weather
 @st.cache_data(ttl=900)
 def get_live_stadium_weather(lat, lon, roof_type):
-    if "Dome" in str(roof_type) or "Retractable" in str(roof_type):
-        return {"temp": 72.0, "wind": 0.0, "precip": 0.0, "condition": "Controlled (Indoor)", "penalty": 0.0}
-    
+    if "Dome" in str(roof_type) or "Retractable" in str(roof_type): return {"temp": 72.0, "wind": 0.0, "precip": 0.0, "condition": "Controlled (Indoor)", "penalty": 0.0}
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,precipitation&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch"
         resp = requests.get(url, timeout=5)
         data = resp.json().get('current', {})
-        
         temp = data.get('temperature_2m', 70.0)
         wind = data.get('wind_speed_10m', 0.0)
         precip = data.get('precipitation', 0.0)
-        
         penalty = 0.0
         if temp < 32: penalty += 3.0
         elif temp < 40: penalty += 1.0
         if wind > 20: penalty += 4.0
         elif wind > 15: penalty += 2.0
         if precip > 0.05: penalty += 3.0
-        
         condition = "Clear / Fair"
         if precip > 0.05: condition = "Active Precipitation"
         elif wind > 15: condition = "High Winds"
         elif temp < 32: condition = "Freezing Conditions"
-        
         return {"temp": temp, "wind": wind, "precip": precip, "condition": condition, "penalty": min(10.0, penalty)}
-    except Exception:
-        return {"temp": 70.0, "wind": 0.0, "precip": 0.0, "condition": "Data Unavailable", "penalty": 0.0}
+    except Exception: return {"temp": 70.0, "wind": 0.0, "precip": 0.0, "condition": "Data Unavailable", "penalty": 0.0}
 
-# 5. Live ESPN Scoreboard
 @st.cache_data(ttl=30)
 def get_live_game_data(team_abbr, week_num):
     espn_abbr = 'WSH' if team_abbr == 'WAS' else team_abbr
@@ -209,19 +177,15 @@ def get_live_game_data(team_abbr, week_num):
         url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={CURRENT_YEAR}&seasontype=2&week={week_num}"
         resp = requests.get(url, timeout=5)
         data = resp.json()
-        
         for event in data.get('events', []):
             competition = event['competitions'][0]
             competitors = competition['competitors']
             team_abbrs = [c['team']['abbreviation'] for c in competitors]
-            
             if espn_abbr in team_abbrs:
                 status = event['status']['type']['state']
                 short_detail = event['status']['type']['shortDetail']
-                
                 home_team = competitors[0] if competitors[0]['homeAway'] == 'home' else competitors[1]
                 away_team = competitors[1] if competitors[0]['homeAway'] == 'home' else competitors[0]
-                
                 game_info = {
                     'status': status,
                     'clock': short_detail,
@@ -232,7 +196,6 @@ def get_live_game_data(team_abbr, week_num):
                     'wp': None,
                     'possession': None
                 }
-                
                 if status == 'in':
                     situation = competition.get('situation', {})
                     game_info['possession'] = situation.get('lastPlay', {}).get('text', 'Live in action')
@@ -241,18 +204,15 @@ def get_live_game_data(team_abbr, week_num):
                         home_wp = prob.get('homeWinPercentage', 0.5)
                         away_wp = prob.get('awayWinPercentage', 0.5)
                         game_info['wp'] = round((home_wp if espn_abbr == home_team['team']['abbreviation'] else away_wp) * 100, 1)
-                
                 return game_info
-    except Exception:
-        pass
+    except Exception: pass
     return None
 
 def safe_progress_val(prob_pct):
     try:
         val = float(prob_pct) / 100.0
         return 0.5 if math.isnan(val) else max(0.0, min(1.0, val))
-    except Exception:
-        return 0.5
+    except Exception: return 0.5
 
 def calculate_travel_distance(lat1, lon1, lat2, lon2):
     R = 3958.8
@@ -262,15 +222,12 @@ def calculate_travel_distance(lat1, lon1, lat2, lon2):
     a = (math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
     return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
 
-# App State & Sidebar Setup
-if "selected_team" not in st.session_state:
-    st.session_state.selected_team = "Kansas City Chiefs"
-
+# Sidebar
+if "selected_team" not in st.session_state: st.session_state.selected_team = "Kansas City Chiefs"
 team_names = df_teams["team"].tolist()
 st.sidebar.title("Matchup & Vitals Hub")
 current_index = team_names.index(st.session_state.selected_team)
 selected_name = st.sidebar.selectbox("Select Team", team_names, index=current_index)
-
 if selected_name != st.session_state.selected_team:
     st.session_state.selected_team = selected_name
     st.rerun()
@@ -306,30 +263,21 @@ with st.sidebar.expander("📰 Live Team Vitals & News", expanded=False):
     t1, t2 = st.tabs(["🏥 Injuries", "📰 Headlines"])
     with t1:
         with st.container(height=220):
-            for item in news_dict['injuries']:
-                st.markdown(f"- {item}")
+            for item in news_dict['injuries']: st.markdown(f"- {item}")
     with t2:
         with st.container(height=220):
-            for item in news_dict['news']:
-                st.markdown(f"- {item}")
+            for item in news_dict['news']: st.markdown(f"- {item}")
 
-# Manual Forecast Controls
 st.sidebar.markdown("---")
 st.sidebar.subheader("Manual Forecast Controls")
-st.sidebar.markdown("**1. Injury Attrition Severity (0-10):**\n> *Simulate key starter / depth losses.*")
 inj_val = st.sidebar.slider("Injury Attrition", 0, 10, 0)
-st.sidebar.markdown("**2. Weather Severity (0-10):**\n> *Manual weather stress-test.*")
 wea_val = st.sidebar.slider("Weather Severity", 0, 10, 0)
-st.sidebar.markdown("**3. Travel Fatigue Multiplier (0-10):**\n> *Amplifies long-distance flight fatigue.*")
 trv_val = st.sidebar.slider("Travel Fatigue Multiplier", 0, 10, 0)
 
 def calculate_adjusted_playoff(row, current_abbr, inj, wea, trv):
-    try:
-        base = float(row.get("BasePlayoff", 50.0))
-    except Exception:
-        base = 50.0
-    if row["abbr"] == current_abbr:
-        return round(max(1.0, min(99.0, base - ((inj * 2.2) + (wea * 1.0) + (trv * 1.2)))), 1)
+    try: base = float(row.get("BasePlayoff", 50.0))
+    except Exception: base = 50.0
+    if row["abbr"] == current_abbr: return round(max(1.0, min(99.0, base - ((inj * 2.2) + (wea * 1.0) + (trv * 1.2)))), 1)
     return base
 
 df_teams["adjusted_playoff"] = df_teams.apply(lambda row: calculate_adjusted_playoff(row, selected_abbr, inj_val, wea_val, trv_val), axis=1)
@@ -353,7 +301,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             away_abbr = game["away_team"]
             is_home = (home_abbr == selected_abbr)
             opp_abbr = away_abbr if is_home else home_abbr
-
             opp_info = team_dict.get(opp_abbr, {"team": opp_abbr, "lat": team_df_row["lat"], "lon": team_df_row["lon"], "surface": "Unknown", "roof": "Unknown", "Rating": 1500})
             opp_name = opp_info.get("team", opp_abbr)
             
@@ -362,7 +309,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 (3, "DAL", "BAL"): {"stadium": "Maracanã Stadium (Brazil)", "lat": -22.9121, "lon": -43.2301, "surface": "Bermuda Grass", "roof": "Open / Outdoor"},
                 (10, "DET", "NE"): {"stadium": "Allianz Arena (Germany)", "lat": 48.2188, "lon": 11.6247, "surface": "Natural Grass", "roof": "Open / Outdoor"}
             }
-            
             game_key = (selected_week, home_abbr, away_abbr)
             is_international = game_key in international_games
             
@@ -381,10 +327,8 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 dest_surface = team_df_row.get("surface", "Unknown") if is_home else opp_info.get("surface", "Unknown")
                 dest_roof = team_df_row.get("roof", "Unknown") if is_home else opp_info.get("roof", "Unknown")
                 hfa_points = 45
-                
                 target_lat_weather = team_df_row["lat"] if is_home else opp_info.get("lat", team_df_row["lat"])
                 target_lon_weather = team_df_row["lon"] if is_home else opp_info.get("lon", team_df_row["lon"])
-                
                 travel_distance_miles = calculate_travel_distance(team_df_row["lat"], team_df_row["lon"], target_lat_weather, target_lon_weather) if loc == "Away" else 0
             
             away_team_name = team_df_row['team'] if not is_home else opp_name
@@ -401,11 +345,10 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 
             if away_usual_surface != dest_surface and "Unknown" not in [away_usual_surface, dest_surface]:
                 st.caption(f"⚠️ **Surface Change:** The {away_team_name} normally play on {away_usual_surface}, but this game is on {dest_surface}.")
-            
             if any(term in away_usual_roof for term in ["Dome", "Retractable"]) and "Open" in dest_roof:
                 st.caption(f"❄️ **Weather Exposure:** The {away_team_name} are an indoor/dome team traveling outdoors.")
 
-            apply_live_weather = st.checkbox("Inject live weather penalty into odds", value=False, help="Overrides manual weather slider and feeds the real-time API penalty directly into the log-odds.")
+            apply_live_weather = st.checkbox("Inject live weather penalty into odds", value=False)
 
             ml_file = "weekly_predictions.csv"
             used_ml = False
@@ -417,14 +360,12 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                     ml_df = pd.read_csv(ml_file)
                     ml_df['home_team'] = ml_df['home_team'].replace(NFL_ABBR_MAP)
                     ml_df['away_team'] = ml_df['away_team'].replace(NFL_ABBR_MAP)
-                    
                     game_match = ml_df[(ml_df["week"] == selected_week) & (ml_df["home_team"] == home_abbr) & (ml_df["away_team"] == away_abbr)]
                     if not game_match.empty:
                         raw_home_prob = float(game_match.iloc[0]["home_win_prob"])
                         used_ml = True
                         st.caption("🤖 *Baseline odds: Machine Learning Pipeline*")
-                except Exception:
-                    pass
+                except Exception: pass
             
             if not used_ml:
                 home_power = float(team_dict.get(home_abbr, {}).get("Rating", 1500))
@@ -437,7 +378,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             home_log_odds = math.log(raw_home_prob / (1.0 - raw_home_prob))
             
             active_wea_val = live_weather['penalty'] if apply_live_weather else wea_val
-            
             away_lat = team_dict.get(away_abbr, {}).get("lat", target_lat_weather)
             away_lon = team_dict.get(away_abbr, {}).get("lon", target_lon_weather)
             actual_away_flight = calculate_travel_distance(away_lat, away_lon, target_lat_weather, target_lon_weather) if not is_international else 0.0
@@ -448,7 +388,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             
             net_home_advantage_shift = dist_penalty + inj_shift + wea_shift
             adj_home_log_odds = home_log_odds + net_home_advantage_shift
-            
             adj_home_prob = round((1.0 / (1.0 + math.exp(-adj_home_log_odds))) * 100.0, 1)
             adj_away_prob = round(100.0 - adj_home_prob, 1)
 
@@ -458,97 +397,74 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             if used_ml and not game_match.empty and 'model_margin' in game_match.columns:
                 m_row = game_match.iloc[0]
                 model_margin = m_row.get('model_margin', None)
-                
                 match_sched = official_schedule[official_schedule['game_id'] == m_row['game_id']]
                 market_margin = None
                 if not match_sched.empty:
                     raw_spread = match_sched.iloc[0]['spread_line']
-                    if pd.notna(raw_spread):
-                        market_margin = float(raw_spread if m_row['home_team'] == selected_abbr else -raw_spread)
+                    if pd.notna(raw_spread): market_margin = float(raw_spread if m_row['home_team'] == selected_abbr else -raw_spread)
                 
                 if pd.notna(model_margin):
                     with st.expander("💰 Market Discrepancy & Spread Edge", expanded=True):
                         team_model_margin = float(model_margin if is_home else -model_margin)
                         team_market_margin = market_margin if pd.notna(market_margin) else 0.0
-                        
                         team_edge = team_model_margin - team_market_margin
-
                         team_market_spread = -team_market_margin
                         team_model_spread = -team_model_margin
 
-                        def format_spread(val):
-                            return "PK" if round(val, 1) == 0.0 else f"{val:+.1f}"
+                        def format_spread(val): return "PK" if round(val, 1) == 0.0 else f"{val:+.1f}"
 
                         c1, c2, c3 = st.columns(3)
                         c1.metric("Market Spread", format_spread(team_market_spread) if pd.notna(market_margin) else "N/A", help="Consensus Vegas spread.")
                         c2.metric("Model Spread", format_spread(team_model_spread), help="Where the model thinks the spread should be.")
-                        
                         edge_val = abs(team_edge)
-                        c3.metric(
-                            "Hidden Value", 
-                            f"{edge_val:.1f} pts" if pd.notna(market_margin) else "N/A", 
-                            delta=f"{team_edge:+.1f} for {st.session_state.selected_team}" if pd.notna(market_margin) else None,
-                            help="How much mathematical value this team has against the Vegas line."
-                        )
+                        c3.metric("Hidden Value", f"{edge_val:.1f} pts" if pd.notna(market_margin) else "N/A", delta=f"{team_edge:+.1f} for {st.session_state.selected_team}" if pd.notna(market_margin) else None)
+
+                        st.markdown("**Spread Comparison Indicator**")
+                        comp_df = pd.DataFrame({"Points": [team_market_spread, team_model_spread]}, index=["Vegas Spread", "Model Spread"])
+                        st.bar_chart(comp_df, height=150, color="#1f77b4")
 
                         favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
                         st.markdown("---")
                         
                         if pd.notna(market_margin):
-                            if round(edge_val, 1) == 0.0:
-                                st.caption("⚖️ **Perfect Agreement:** The model and the sportsbooks project the exact same margin.")
+                            if round(edge_val, 1) == 0.0: st.caption("⚖️ **Perfect Agreement:** The model and the sportsbooks project the exact same margin.")
                             else:
                                 if team_edge > 0:
-                                    if team_market_spread > 0 and team_model_spread <= 0:
-                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to be underdogs (+{team_market_spread:.1f}), but the model expects an outright **UPSET victory** (winning by {abs(team_model_spread):.1f})."
-                                    elif team_market_spread > 0 and team_model_spread > 0:
-                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a much closer game (losing by only {team_model_spread:.1f})."
-                                    elif team_market_spread <= 0 and team_model_spread < 0:
-                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by an even larger blowout ({abs(team_model_spread):.1f})."
+                                    if team_market_spread > 0 and team_model_spread <= 0: logic_text = f"Vegas expects the {st.session_state.selected_team} to be underdogs (+{team_market_spread:.1f}), but the model expects an outright **UPSET victory** (winning by {abs(team_model_spread):.1f})."
+                                    elif team_market_spread > 0 and team_model_spread > 0: logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model thinks it will be a much closer game (losing by only {team_model_spread:.1f})."
+                                    elif team_market_spread <= 0 and team_model_spread < 0: logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model expects them to win by an even larger blowout ({abs(team_model_spread):.1f})."
                                 else: 
-                                    if team_market_spread <= 0 and team_model_spread > 0:
-                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to be favorites (-{abs(team_market_spread):.1f}), but the model expects an outright **UPSET loss** (losing by {team_model_spread:.1f})."
-                                    elif team_market_spread <= 0 and team_model_spread <= 0:
-                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model thinks it will be a much closer game (winning by only {abs(team_model_spread):.1f})."
-                                    elif team_market_spread > 0 and team_model_spread > 0:
-                                        logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model expects them to get beat even worse (losing by {team_model_spread:.1f})."
-
+                                    if team_market_spread <= 0 and team_model_spread > 0: logic_text = f"Vegas expects the {st.session_state.selected_team} to be favorites (-{abs(team_market_spread):.1f}), but the model expects an outright **UPSET loss** (losing by {team_model_spread:.1f})."
+                                    elif team_market_spread <= 0 and team_model_spread <= 0: logic_text = f"Vegas expects the {st.session_state.selected_team} to win by {abs(team_market_spread):.1f}, but the model thinks it will be a much closer game (winning by only {abs(team_model_spread):.1f})."
+                                    elif team_market_spread > 0 and team_model_spread > 0: logic_text = f"Vegas expects the {st.session_state.selected_team} to lose by {team_market_spread:.1f}, but the model expects them to get beat even worse (losing by {team_model_spread:.1f})."
                                 icon = "🔥" if edge_val >= 2.0 else "💡"
                                 bold_alert = "**Actionable Edge:** " if edge_val >= 2.0 else "**How to read this:** "
                                 st.caption(f"{icon} {bold_alert}{logic_text} Therefore, the model identifies **{edge_val:.1f} points of betting value** on the **{favored_team}**.")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"📡 Week {selected_week} Game Tracker")
-
 live_data = get_live_game_data(selected_abbr, selected_week)
-
 if live_data and live_data['status'] == 'in':
     st.sidebar.markdown(f"**{live_data['away_abbr']} @ {live_data['home_abbr']}**")
     st.sidebar.markdown(f"Live Score: `{live_data['away_score']} - {live_data['home_score']}`")
     st.sidebar.caption(f"Clock: {live_data['clock']}")
-    
     current_wp = live_data['wp'] if live_data['wp'] is not None else win_prob
     st.sidebar.metric(label="In-Game Live Win Probability", value=f"{current_wp}%")
     st.sidebar.progress(safe_progress_val(current_wp))
-    if live_data.get('possession'):
-        st.sidebar.caption(f"Last Play: {live_data['possession']}")
-
+    if live_data.get('possession'): st.sidebar.caption(f"Last Play: {live_data['possession']}")
 elif live_data and live_data['status'] == 'post':
     st.sidebar.markdown(f"**{live_data['away_abbr']} @ {live_data['home_abbr']}**")
     st.sidebar.markdown(f"Final Score: `{live_data['away_score']} - {live_data['home_score']}`")
     st.sidebar.success("Game Final.")
-
 else:
     st.sidebar.info(f"⏳ **Upcoming Matchup:** vs. {opp_name}")
     st.sidebar.metric(label="Projected Pre-Game Win Likelihood", value=f"{win_prob}%")
     st.sidebar.progress(safe_progress_val(win_prob))
-    st.sidebar.caption("⚡ *Live play-by-play and win probability will stream here automatically at kickoff.*")
 
 st.markdown("---")
 metrics_file = "model_metrics.csv"
 acc, brier, ll = 65.4, 0.215, 0.612
 freshness_label = "Baseline Mock"
-
 if os.path.exists(metrics_file):
     try:
         m_df = pd.read_csv(metrics_file)
@@ -558,8 +474,7 @@ if os.path.exists(metrics_file):
         ll = round(latest_m['log_loss'], 3)
         mtime = datetime.datetime.fromtimestamp(os.path.getmtime(metrics_file))
         freshness_label = f"Last Pipeline Run: {mtime.strftime('%b %d, %Y %H:%M UTC')}"
-    except Exception:
-        pass
+    except Exception: pass
 
 st.subheader(f"📊 Algorithmic Performance (Out-of-Time Backtested)")
 st.caption(f"Pipeline Status: **{freshness_label}**")
@@ -571,8 +486,7 @@ col3.metric("Log Loss", f"{ll}", help="Penalizes extreme misconfidence.")
 
 if 'm_df' in locals() and 'date' in m_df.columns and len(m_df) > 1:
     tab1, tab2 = st.tabs(["📉 Calibration Over Time (Log Loss & Brier)", "🎯 Accuracy Over Time"])
-    with tab1:
-        st.line_chart(m_df.set_index('date')[['log_loss', 'brier_score']])
+    with tab1: st.line_chart(m_df.set_index('date')[['log_loss', 'brier_score']])
     with tab2:
         m_df['Accuracy %'] = m_df['accuracy'] * 100.0
         st.line_chart(m_df.set_index('date')[['Accuracy %']])
@@ -605,7 +519,7 @@ if os.path.exists(ml_file) and not official_schedule.empty:
         audit_raw['home_team'] = audit_raw['home_team'].replace(NFL_ABBR_MAP)
         audit_raw['away_team'] = audit_raw['away_team'].replace(NFL_ABBR_MAP)
         
-        tab_team, tab_league = st.tabs([f"🔎 {st.session_state.selected_team} Audit", "🌎 League-Wide Macro Audit"])
+        tab_team, tab_league, tab_brain = st.tabs([f"🔎 {st.session_state.selected_team} Audit", "🌎 League-Wide Macro Audit", "🧠 Inside the Algorithm (Live Weights)"])
         
         # --- TAB 1: TEAM SPECIFIC AUDIT ---
         with tab_team:
@@ -627,18 +541,14 @@ if os.path.exists(ml_file) and not official_schedule.empty:
                     m_err = abs(actual_margin - model_proj)
                     model_errors.append(m_err)
                     
-                    # Directional logic (Did we pick the right winner?)
-                    if (actual_margin > 0 and model_proj > 0) or (actual_margin < 0 and model_proj < 0) or (actual_margin == 0 and round(model_proj) == 0):
-                        directional_wins.append(1)
-                    else:
-                        directional_wins.append(0)
+                    if (actual_margin > 0 and model_proj > 0) or (actual_margin < 0 and model_proj < 0) or (actual_margin == 0 and round(model_proj) == 0): directional_wins.append(1)
+                    else: directional_wins.append(0)
                         
                     match_sched = official_schedule[official_schedule['game_id'] == r['game_id']]
                     vegas_proj = None
                     if not match_sched.empty:
                         raw_spread = match_sched.iloc[0]['spread_line']
-                        if pd.notna(raw_spread):
-                            vegas_proj = float(raw_spread if is_h else -raw_spread)
+                        if pd.notna(raw_spread): vegas_proj = float(raw_spread if is_h else -raw_spread)
                     
                     audit_records.append({
                         "Week": f"Wk {int(r['week'])}",
@@ -659,7 +569,6 @@ if os.path.exists(ml_file) and not official_schedule.empty:
                 st.markdown("**Model Expectation vs. Actual Reality**")
                 st.bar_chart(audit_df[["Model Expectation", "Actual Outcome"]], color=["#1f77b4", "#2ca02c"], stack=False)
                 st.caption("This chart visually pairs **what your model expected to happen** (Blue) alongside **what actually happened on the field** (Green). A highly accurate prediction means the two bars are nearly identical in height and direction.")
-                
                 st.markdown("**Raw Margin Ledger**")
                 st.dataframe(audit_df, use_container_width=True)
                 audit_done = True
@@ -671,12 +580,9 @@ if os.path.exists(ml_file) and not official_schedule.empty:
             macro_games = audit_raw[audit_raw['result'].notna() & (audit_raw['season'] == CURRENT_YEAR)].copy()
             if not macro_games.empty:
                 macro_games['abs_err'] = abs(macro_games['result'] - macro_games['model_margin'])
-                
                 def check_win(row):
-                    if (row['result'] > 0 and row['model_margin'] > 0) or (row['result'] < 0 and row['model_margin'] < 0) or (row['result'] == 0 and round(row['model_margin']) == 0):
-                        return 1
+                    if (row['result'] > 0 and row['model_margin'] > 0) or (row['result'] < 0 and row['model_margin'] < 0) or (row['result'] == 0 and round(row['model_margin']) == 0): return 1
                     return 0
-                    
                 macro_games['correct'] = macro_games.apply(check_win, axis=1)
                 
                 overall_mae = macro_games['abs_err'].mean()
@@ -684,8 +590,8 @@ if os.path.exists(ml_file) and not official_schedule.empty:
                 
                 c1, c2, c3 = st.columns(3)
                 c1.metric("League Games Audited", f"{len(macro_games)} Game(s)")
-                c2.metric("League-Wide Mean Error", f"±{overall_mae:.1f} pts", help="The average point error across all NFL games played so far this season.")
-                c3.metric("League-Wide Win/Loss Accuracy", f"{overall_win:.1f}%", help="The model's overall straight-up record across the entire NFL.")
+                c2.metric("League-Wide Mean Error", f"±{overall_mae:.1f} pts")
+                c3.metric("League-Wide Win/Loss Accuracy", f"{overall_win:.1f}%")
                 
                 st.markdown("---")
                 colA, colB = st.columns(2)
@@ -694,16 +600,23 @@ if os.path.exists(ml_file) and not official_schedule.empty:
                 with colA:
                     st.success("**🎯 Top 3 Best Predictions (Closest Hits)**")
                     best = macro_games.nsmallest(3, 'abs_err')
-                    for _, row in best.iterrows():
-                        st.markdown(f"- **{row['Matchup']}**: Off by just **{row['abs_err']:.1f} pts**")
-                        
+                    for _, row in best.iterrows(): st.markdown(f"- **{row['Matchup']}**: Off by just **{row['abs_err']:.1f} pts**")
                 with colB:
                     st.error("**⚠️ Top 3 Worst Whiffs (Biggest Misses)**")
                     worst = macro_games.nlargest(3, 'abs_err')
-                    for _, row in worst.iterrows():
-                        st.markdown(f"- **{row['Matchup']}**: Off by **{row['abs_err']:.1f} pts**")
+                    for _, row in worst.iterrows(): st.markdown(f"- **{row['Matchup']}**: Off by **{row['abs_err']:.1f} pts**")
             else:
-                st.info("League-wide metrics will populate here once completed game results for the current season are processed.")
+                st.info("League-wide metrics will populate here once completed game results are processed.")
+                
+        # --- TAB 3: INSIDE THE ALGORITHM (LIVE BRAIN WEIGHTS) ---
+        with tab_brain:
+            st.markdown("**What is the Machine Learning model currently prioritizing?**")
+            st.caption("Every week, the algorithm retrains itself on the newest data. This chart extracts the actual mathematical weights (coefficients) from the AI's Ridge regression brain. As the season progresses, you will literally watch it dynamically shift priority between these variables based on what is actually winning football games.")
+            
+            if os.path.exists("feature_weights.csv"):
+                weights_df = pd.read_csv("feature_weights.csv").set_index("Feature")
+                st.bar_chart(weights_df, color="#9467bd")
+            else:
+                st.info("Live feature weights will be extracted and displayed after your next automated pipeline run.")
 
-    except Exception:
-        pass
+    except Exception: pass
