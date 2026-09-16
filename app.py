@@ -24,7 +24,7 @@ st.markdown(
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 
-# 1. Complete 32-Team Dataset (Updated Venues & Co-Location Map Offsets)
+# 1. Complete 32-Team Dataset
 def load_team_data():
     base_data = [
         {"team": "Arizona Cardinals", "abbr": "ARI", "lat": 33.5276, "lon": -112.2626, "stadium": "State Farm Stadium", "surface": "Bermuda Grass", "roof": "Retractable Roof", "capacity": 63400, "Off": 18, "Def": 22, "SOS": ".536", "TO": -2, "BasePlayoff": 32.0, "Rating": 1500},
@@ -490,6 +490,13 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                             help="How much mathematical value this team has against the Vegas line."
                         )
 
+                        # BRAND NEW: Visual Bar Chart Indicator for the Model vs Vegas Expectation
+                        st.markdown("**Spread Comparison Indicator**")
+                        comp_df = pd.DataFrame({
+                            "Points": [team_market_spread, team_model_spread]
+                        }, index=["Vegas Spread", "Model Spread"])
+                        st.bar_chart(comp_df, height=150, color="#1f77b4")
+
                         favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
                         st.markdown("---")
                         
@@ -594,20 +601,27 @@ st.markdown("---")
 st.subheader(f"📈 {st.session_state.selected_team} Performance vs. Vegas Expectations")
 
 if not official_schedule.empty:
-    team_past_games = official_schedule[(official_schedule["home_team"] == selected_abbr) | (official_schedule["away_team"] == selected_abbr)]
+    # Safely isolate completed games from the current season only
+    team_past_games = official_schedule[
+        ((official_schedule["home_team"] == selected_abbr) | (official_schedule["away_team"] == selected_abbr)) &
+        (official_schedule["season"] == CURRENT_YEAR)
+    ]
     team_past_games = team_past_games[team_past_games["result"].notna()].sort_values("week")
     
     if not team_past_games.empty:
         ats_records = []
         for _, r in team_past_games.iterrows():
+            # FIXED: If nflverse hasn't published the official closing line yet, skip it so we don't graph fake blowouts
+            if pd.isna(r["spread_line"]):
+                continue 
+                
             is_h = r["home_team"] == selected_abbr
             
             # Result is Home Score - Away Score. Positive means Home won.
             act_margin = r["result"] if is_h else -r["result"]
             
-            # spread_line in nflverse is negative for Home favorites.
-            # So the expected home point margin is -spread_line.
-            home_expected_margin = -r["spread_line"] if pd.notna(r["spread_line"]) else 0.0
+            # nflverse correctly stores spread_line as the Expected Home Margin (Positive = Home is favored)
+            home_expected_margin = r["spread_line"]
             exp_margin = home_expected_margin if is_h else -home_expected_margin
             
             ats_diff = act_margin - exp_margin
@@ -617,8 +631,11 @@ if not official_schedule.empty:
                 "Performance vs Expectation (Pts)": round(ats_diff, 1)
             })
             
-        ats_df = pd.DataFrame(ats_records)
-        st.bar_chart(ats_df.set_index("Week"), color="#1f77b4")
-        st.caption("Positive bars indicate the team outperformed Vegas spread expectations (they covered the spread); negative bars indicate underperformance. A team consistently hitting positive bars is being consistently undervalued by the betting market.")
+        if ats_records:
+            ats_df = pd.DataFrame(ats_records)
+            st.bar_chart(ats_df.set_index("Week"), color="#1f77b4")
+            st.caption("Positive bars indicate the team outperformed Vegas spread expectations (they covered the spread); negative bars indicate underperformance. A team consistently hitting positive bars is being consistently undervalued by the betting market.")
+        else:
+            st.info("Waiting for official Vegas closing lines to be published to the database for completed games.")
     else:
         st.info("Regular season performance data will populate here dynamically after Week 1 is officially completed.")
