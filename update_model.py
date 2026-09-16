@@ -150,7 +150,7 @@ def main():
     ])
     margin_pipe.fit(X, y_margin)
 
-    # Out-of-Sample Performance Logging
+    # Out-of-Sample Performance Logging (Appends over time)
     if len(completed) > 50:
         split_idx = int(len(completed) * 0.8)
         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
@@ -161,11 +161,26 @@ def main():
         preds = eval_pipe.predict(X_test)
         probs = eval_pipe.predict_proba(X_test)[:, 1]
         
-        pd.DataFrame([{
+        new_metric = pd.DataFrame([{
+            'date': datetime.datetime.now().strftime('%Y-%m-%d'),
             'accuracy': float(accuracy_score(y_test, preds)),
             'brier_score': float(brier_score_loss(y_test, probs)),
             'log_loss': float(log_loss(y_test, probs))
-        }]).to_csv("model_metrics.csv", index=False)
+        }])
+        
+        metrics_file = "model_metrics.csv"
+        if os.path.exists(metrics_file):
+            try:
+                old_m = pd.read_csv(metrics_file)
+                if 'date' not in old_m.columns:
+                    old_m['date'] = datetime.datetime.now().strftime('%Y-%m-%d')
+                m_df = pd.concat([old_m, new_metric]).drop_duplicates(subset=['date'], keep='last')
+            except Exception:
+                m_df = new_metric
+        else:
+            m_df = new_metric
+            
+        m_df.to_csv(metrics_file, index=False)
 
     # -------------------------------------------------------------------------
     # PART C: DYNAMIC TEAM POWER RATINGS (EVALUATED VS AVERAGE TEAM)
