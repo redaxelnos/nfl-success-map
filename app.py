@@ -262,7 +262,7 @@ def calculate_travel_distance(lat1, lon1, lat2, lon2):
     a = (math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
     return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
 
-# App State & Sidebar
+# App State & Sidebar Setup
 if "selected_team" not in st.session_state:
     st.session_state.selected_team = "Kansas City Chiefs"
 
@@ -458,14 +458,21 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
             if used_ml and not game_match.empty and 'model_margin' in game_match.columns:
                 m_row = game_match.iloc[0]
                 model_margin = m_row.get('model_margin', None)
-                market_margin = m_row.get('market_margin', None)
-                home_edge = m_row.get('home_edge', None)
-
+                
+                # Fetch authentic Vegas Line directly from live schedule
+                match_sched = official_schedule[official_schedule['game_id'] == m_row['game_id']]
+                market_margin = None
+                if not match_sched.empty:
+                    raw_spread = match_sched.iloc[0]['spread_line']
+                    if pd.notna(raw_spread):
+                        market_margin = float(raw_spread if m_row['home_team'] == selected_abbr else -raw_spread)
+                
                 if pd.notna(model_margin):
                     with st.expander("💰 Market Discrepancy & Spread Edge", expanded=True):
                         team_model_margin = float(model_margin if is_home else -model_margin)
-                        team_market_margin = float(market_margin if is_home else -market_margin) if pd.notna(market_margin) else 0.0
-                        team_edge = float(home_edge if is_home else -home_edge) if pd.notna(home_edge) else 0.0
+                        team_market_margin = market_margin if pd.notna(market_margin) else 0.0
+                        
+                        team_edge = team_model_margin - team_market_margin
 
                         team_market_spread = -team_market_margin
                         team_model_spread = -team_model_margin
@@ -484,6 +491,12 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                             delta=f"{team_edge:+.1f} for {st.session_state.selected_team}" if pd.notna(market_margin) else None,
                             help="How much mathematical value this team has against the Vegas line."
                         )
+
+                        st.markdown("**Spread Comparison Indicator**")
+                        comp_df = pd.DataFrame({
+                            "Points": [team_market_spread, team_model_spread]
+                        }, index=["Vegas Spread", "Model Spread"])
+                        st.bar_chart(comp_df, height=150, color="#1f77b4")
 
                         favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
                         st.markdown("---")
@@ -587,7 +600,7 @@ if output and output.get("last_object_clicked_tooltip"):
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 9. TRUE MODEL AUDIT: MODEL PROJECTION VS. ACTUAL REALITY
+# 9. TRUE MODEL AUDIT: PREDICTION ERROR TRACKER
 # -------------------------------------------------------------------------
 st.markdown("---")
 st.subheader(f"🎯 Model Calibration & Accuracy Audit: {st.session_state.selected_team}")
@@ -595,20 +608,20 @@ st.subheader(f"🎯 Model Calibration & Accuracy Audit: {st.session_state.select
 ml_file = "weekly_predictions.csv"
 audit_done = False
 
-if os.path.exists(ml_file):
+if os.path.exists(ml_file) and not official_schedule.empty:
     try:
         audit_raw = pd.read_csv(ml_file)
         audit_raw['home_team'] = audit_raw['home_team'].replace(NFL_ABBR_MAP)
         audit_raw['away_team'] = audit_raw['away_team'].replace(NFL_ABBR_MAP)
         
-        # Isolate completed games for this team
         t_games = audit_raw[
             ((audit_raw['home_team'] == selected_abbr) | (audit_raw['away_team'] == selected_abbr)) &
-            (audit_raw['result'].notna())
+            (audit_raw['result'].notna()) & (audit_raw['season'] == CURRENT_YEAR)
         ].sort_values('week')
         
         if not t_games.empty:
             audit_records = []
+            error_records = []
             model_errors = []
             vegas_errors = []
             
@@ -617,50 +630,68 @@ if os.path.exists(ml_file):
                 actual_margin = float(r['result'] if is_h else -r['result'])
                 model_proj = float(r['model_margin'] if is_h else -r['model_margin'])
                 
-                # Check if Vegas market margin is present
-                vegas_proj = float(r['market_margin'] if is_h else -r['market_margin']) if pd.notna(r.get('market_margin')) else None
+                # Directly bypass CSV to fetch pristine Vegas Line from live schedule
+                match_sched = official_schedule[official_schedule['game_id'] == r['game_id']]
+                vegas_proj = None
+                if not match_sched.empty:
+                    raw_spread = match_sched.iloc[0]['spread_line']
+                    if pd.notna(raw_spread):
+                        vegas_proj = float(raw_spread if is_h else -raw_spread)
                 
                 m_err = abs(actual_margin - model_proj)
                 model_errors.append(m_err)
+                week_label = f"Wk {int(r['week'])}"
                 
                 row_entry = {
-                    "Week": f"Wk {int(r['week'])}",
+                    "Week": week_label,
                     "Actual Final Margin": round(actual_margin, 1),
                     "Model Projected Margin": round(model_proj, 1)
                 }
                 
+                err_entry = {
+                    "Week": week_label,
+                    "Model Error (pts)": round(m_err, 1)
+                }
+                
                 if vegas_proj is not None:
                     row_entry["Vegas Line"] = round(vegas_proj, 1)
-                    vegas_errors.append(abs(actual_margin - vegas_proj))
+                    v_err = abs(actual_margin - vegas_proj)
+                    vegas_errors.append(v_err)
+                    err_entry["Vegas Error (pts)"] = round(v_err, 1)
                     
                 audit_records.append(row_entry)
+                error_records.append(err_entry)
                 
-            audit_df = pd.DataFrame(audit_records)
+            audit_df = pd.DataFrame(audit_records).set_index("Week")
+            error_df = pd.DataFrame(error_records).set_index("Week")
             
-            # Scorecard Metrics
-            mean_model_err = sum(model_errors) / len(model_errors)
+            mean_model_err = sum(model_errors) / len(model_errors) if model_errors else 0
             mean_vegas_err = (sum(vegas_errors) / len(vegas_errors)) if vegas_errors else None
             
             c1, c2, c3 = st.columns(3)
             c1.metric("Games Audited", f"{len(model_errors)} Game(s)")
             c2.metric("Model Mean Error", f"±{mean_model_err:.1f} pts", help="Average difference between your model's projected margin and reality. Closer to 0 is better.")
+            
             if mean_vegas_err is not None:
-                diff = mean_vegas_err - mean_model_err
+                diff = mean_vegas_err - mean_model_err 
                 c3.metric(
                     "Model vs. Vegas Accuracy", 
                     f"{'Outperforming' if diff >= 0 else 'Trailing'} Vegas", 
-                    delta=f"{diff:+.1f} pts precision"
+                    delta=f"{diff:+.1f} pts precision",
+                    help="Positive delta means your model was more accurate than Vegas."
                 )
             else:
                 c3.metric("Model vs. Vegas Accuracy", "Awaiting Vegas lines")
                 
-            st.markdown("**Weekly Point Margins: Model vs. Reality**")
-            chart_data = audit_df.set_index("Week")
-            st.bar_chart(chart_data)
+            st.markdown("**Prediction Accuracy Tracker (Lower Bars are Better)**")
+            st.bar_chart(error_df, color=["#1f77b4", "#d62728"] if mean_vegas_err is not None else ["#1f77b4"])
+            st.caption("This chart tracks **Prediction Error**. It measures exactly how many points off the predictions were from the final score. **Lower bars mean a more accurate prediction.**")
             
-            st.caption("This chart displays your model's exact projected point margin versus the actual outcome. Bars that closely match indicate an accurate projection. If your model's mean error stays under 3.5 points, your predictive features are well-calibrated.")
+            st.markdown("**Raw Margin Ledger**")
+            st.dataframe(audit_df, use_container_width=True)
+            
             audit_done = True
-    except Exception as e:
+    except Exception:
         pass
 
 if not audit_done:
