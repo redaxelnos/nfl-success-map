@@ -512,7 +512,7 @@ else:
     st.sidebar.progress(safe_progress_val(win_prob))
     st.sidebar.caption("⚡ *Live play-by-play and win probability will stream here automatically at kickoff.*")
 
-# 7. Model Performance & Pipeline Freshness Header
+# 7. Model Performance & Calibration Charts (Historical)
 st.markdown("---")
 metrics_file = "model_metrics.csv"
 acc, brier, ll = 65.4, 0.215, 0.612
@@ -521,22 +521,31 @@ freshness_label = "Baseline Mock"
 if os.path.exists(metrics_file):
     try:
         m_df = pd.read_csv(metrics_file)
-        acc = round(m_df.iloc[0]['accuracy'] * 100.0, 1)
-        brier = round(m_df.iloc[0]['brier_score'], 3)
-        ll = round(m_df.iloc[0]['log_loss'], 3)
+        latest_m = m_df.iloc[-1]
+        acc = round(latest_m['accuracy'] * 100.0, 1)
+        brier = round(latest_m['brier_score'], 3)
+        ll = round(latest_m['log_loss'], 3)
         
         mtime = datetime.datetime.fromtimestamp(os.path.getmtime(metrics_file))
         freshness_label = f"Last Pipeline Run: {mtime.strftime('%b %d, %Y %H:%M UTC')}"
     except Exception:
         pass
 
-st.subheader(f"📊 Algorithmic Performance & Calibration (Out-of-Time Backtested)")
+st.subheader(f"📊 Algorithmic Performance (Out-of-Time Backtested)")
 st.caption(f"Pipeline Status: **{freshness_label}**")
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Historical Win/Loss Accuracy", f"{acc}%", help="Walk-forward accuracy on strictly unseen historical games.")
 col2.metric("Brier Score", f"{brier}", help="Measures probabilistic accuracy (0.0 is perfect, 0.250 is coin flip).")
 col3.metric("Log Loss", f"{ll}", help="Penalizes extreme misconfidence.")
+
+if 'm_df' in locals() and 'date' in m_df.columns and len(m_df) > 1:
+    tab1, tab2 = st.tabs(["📉 Calibration Over Time (Log Loss & Brier)", "🎯 Accuracy Over Time"])
+    with tab1:
+        st.line_chart(m_df.set_index('date')[['log_loss', 'brier_score']])
+    with tab2:
+        m_df['Accuracy %'] = m_df['accuracy'] * 100.0
+        st.line_chart(m_df.set_index('date')[['Accuracy %']])
 
 # 8. Folium Map
 m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
@@ -551,3 +560,32 @@ if output and output.get("last_object_clicked_tooltip"):
     if clicked_name in team_names and clicked_name != st.session_state.selected_team:
         st.session_state.selected_team = clicked_name
         st.rerun()
+
+# 9. Team Performance vs Expectations (ATS Historical Graph)
+st.markdown("---")
+st.subheader(f"📈 {st.session_state.selected_team} Performance vs. Vegas Expectations")
+
+if not official_schedule.empty:
+    team_past_games = official_schedule[(official_schedule["home_team"] == selected_abbr) | (official_schedule["away_team"] == selected_abbr)]
+    team_past_games = team_past_games[team_past_games["result"].notna()].sort_values("week")
+    
+    if not team_past_games.empty:
+        ats_records = []
+        for _, r in team_past_games.iterrows():
+            is_h = r["home_team"] == selected_abbr
+            act_margin = r["result"] if is_h else -r["result"]
+            exp_margin = r["spread_line"] if pd.notna(r["spread_line"]) else 0.0
+            exp_margin = exp_margin if is_h else -exp_margin
+            
+            ats_diff = act_margin - exp_margin
+            
+            ats_records.append({
+                "Week": f"Wk {int(r['week'])}",
+                "Performance vs Expectation (Pts)": round(ats_diff, 1)
+            })
+            
+        ats_df = pd.DataFrame(ats_records)
+        st.bar_chart(ats_df.set_index("Week"), color="#1f77b4")
+        st.caption("Positive bars indicate the team outperformed Vegas spread expectations (they covered the spread); negative bars indicate underperformance. A team consistently hitting positive bars is being consistently undervalued by the betting market.")
+    else:
+        st.info("Regular season performance data will populate here dynamically after Week 1 is officially completed.")
