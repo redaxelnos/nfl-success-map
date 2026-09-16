@@ -459,7 +459,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                 m_row = game_match.iloc[0]
                 model_margin = m_row.get('model_margin', None)
                 
-                # Fetch authentic Vegas Line directly from live schedule
                 match_sched = official_schedule[official_schedule['game_id'] == m_row['game_id']]
                 market_margin = None
                 if not match_sched.empty:
@@ -492,12 +491,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                             help="How much mathematical value this team has against the Vegas line."
                         )
 
-                        st.markdown("**Spread Comparison Indicator**")
-                        comp_df = pd.DataFrame({
-                            "Points": [team_market_spread, team_model_spread]
-                        }, index=["Vegas Spread", "Model Spread"])
-                        st.bar_chart(comp_df, height=150, color="#1f77b4")
-
                         favored_team = st.session_state.selected_team if team_edge > 0 else opp_name
                         st.markdown("---")
                         
@@ -523,8 +516,6 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
                                 icon = "🔥" if edge_val >= 2.0 else "💡"
                                 bold_alert = "**Actionable Edge:** " if edge_val >= 2.0 else "**How to read this:** "
                                 st.caption(f"{icon} {bold_alert}{logic_text} Therefore, the model identifies **{edge_val:.1f} points of betting value** on the **{favored_team}**.")
-                        else:
-                            st.caption("Consensus Vegas spread line is not yet released for this matchup.")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader(f"📡 Week {selected_week} Game Tracker")
@@ -600,10 +591,10 @@ if output and output.get("last_object_clicked_tooltip"):
         st.rerun()
 
 # -------------------------------------------------------------------------
-# 9. TRUE MODEL AUDIT: PREDICTION ERROR TRACKER
+# 9. TRUE MODEL AUDIT: EXPECTATION VS. REALITY & LEAGUE OVERVIEW
 # -------------------------------------------------------------------------
 st.markdown("---")
-st.subheader(f"🎯 Model Calibration & Accuracy Audit: {st.session_state.selected_team}")
+st.subheader(f"🎯 Model Calibration & Accuracy Audit")
 
 ml_file = "weekly_predictions.csv"
 audit_done = False
@@ -614,85 +605,105 @@ if os.path.exists(ml_file) and not official_schedule.empty:
         audit_raw['home_team'] = audit_raw['home_team'].replace(NFL_ABBR_MAP)
         audit_raw['away_team'] = audit_raw['away_team'].replace(NFL_ABBR_MAP)
         
-        t_games = audit_raw[
-            ((audit_raw['home_team'] == selected_abbr) | (audit_raw['away_team'] == selected_abbr)) &
-            (audit_raw['result'].notna()) & (audit_raw['season'] == CURRENT_YEAR)
-        ].sort_values('week')
+        tab_team, tab_league = st.tabs([f"🔎 {st.session_state.selected_team} Audit", "🌎 League-Wide Macro Audit"])
         
-        if not t_games.empty:
-            audit_records = []
-            error_records = []
-            model_errors = []
-            vegas_errors = []
+        # --- TAB 1: TEAM SPECIFIC AUDIT ---
+        with tab_team:
+            t_games = audit_raw[
+                ((audit_raw['home_team'] == selected_abbr) | (audit_raw['away_team'] == selected_abbr)) &
+                (audit_raw['result'].notna()) & (audit_raw['season'] == CURRENT_YEAR)
+            ].sort_values('week')
             
-            for _, r in t_games.iterrows():
-                is_h = r['home_team'] == selected_abbr
-                actual_margin = float(r['result'] if is_h else -r['result'])
-                model_proj = float(r['model_margin'] if is_h else -r['model_margin'])
+            if not t_games.empty:
+                audit_records = []
+                model_errors = []
+                directional_wins = []
                 
-                # Directly bypass CSV to fetch pristine Vegas Line from live schedule
-                match_sched = official_schedule[official_schedule['game_id'] == r['game_id']]
-                vegas_proj = None
-                if not match_sched.empty:
-                    raw_spread = match_sched.iloc[0]['spread_line']
-                    if pd.notna(raw_spread):
-                        vegas_proj = float(raw_spread if is_h else -raw_spread)
-                
-                m_err = abs(actual_margin - model_proj)
-                model_errors.append(m_err)
-                week_label = f"Wk {int(r['week'])}"
-                
-                row_entry = {
-                    "Week": week_label,
-                    "Actual Final Margin": round(actual_margin, 1),
-                    "Model Projected Margin": round(model_proj, 1)
-                }
-                
-                err_entry = {
-                    "Week": week_label,
-                    "Model Error (pts)": round(m_err, 1)
-                }
-                
-                if vegas_proj is not None:
-                    row_entry["Vegas Line"] = round(vegas_proj, 1)
-                    v_err = abs(actual_margin - vegas_proj)
-                    vegas_errors.append(v_err)
-                    err_entry["Vegas Error (pts)"] = round(v_err, 1)
+                for _, r in t_games.iterrows():
+                    is_h = r['home_team'] == selected_abbr
+                    actual_margin = float(r['result'] if is_h else -r['result'])
+                    model_proj = float(r['model_margin'] if is_h else -r['model_margin'])
                     
-                audit_records.append(row_entry)
-                error_records.append(err_entry)
+                    m_err = abs(actual_margin - model_proj)
+                    model_errors.append(m_err)
+                    
+                    # Directional logic (Did we pick the right winner?)
+                    if (actual_margin > 0 and model_proj > 0) or (actual_margin < 0 and model_proj < 0) or (actual_margin == 0 and round(model_proj) == 0):
+                        directional_wins.append(1)
+                    else:
+                        directional_wins.append(0)
+                        
+                    match_sched = official_schedule[official_schedule['game_id'] == r['game_id']]
+                    vegas_proj = None
+                    if not match_sched.empty:
+                        raw_spread = match_sched.iloc[0]['spread_line']
+                        if pd.notna(raw_spread):
+                            vegas_proj = float(raw_spread if is_h else -raw_spread)
+                    
+                    audit_records.append({
+                        "Week": f"Wk {int(r['week'])}",
+                        "Model Expectation": round(model_proj, 1),
+                        "Actual Outcome": round(actual_margin, 1),
+                        "Vegas Line (Reference)": round(vegas_proj, 1) if vegas_proj is not None else "N/A"
+                    })
+                    
+                audit_df = pd.DataFrame(audit_records).set_index("Week")
+                mean_model_err = sum(model_errors) / len(model_errors) if model_errors else 0
+                win_rate = (sum(directional_wins) / len(directional_wins)) * 100 if directional_wins else 0
                 
-            audit_df = pd.DataFrame(audit_records).set_index("Week")
-            error_df = pd.DataFrame(error_records).set_index("Week")
-            
-            mean_model_err = sum(model_errors) / len(model_errors) if model_errors else 0
-            mean_vegas_err = (sum(vegas_errors) / len(vegas_errors)) if vegas_errors else None
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Games Audited", f"{len(model_errors)} Game(s)")
-            c2.metric("Model Mean Error", f"±{mean_model_err:.1f} pts", help="Average difference between your model's projected margin and reality. Closer to 0 is better.")
-            
-            if mean_vegas_err is not None:
-                diff = mean_vegas_err - mean_model_err 
-                c3.metric(
-                    "Model vs. Vegas Accuracy", 
-                    f"{'Outperforming' if diff >= 0 else 'Trailing'} Vegas", 
-                    delta=f"{diff:+.1f} pts precision",
-                    help="Positive delta means your model was more accurate than Vegas."
-                )
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Games Audited", f"{len(model_errors)} Game(s)")
+                c2.metric("Mean Point Error", f"±{mean_model_err:.1f} pts", help="Average difference between your model's projected margin and actual reality.")
+                c3.metric("Straight-Up Win/Loss Accuracy", f"{win_rate:.0f}%", help="Percentage of games where the model picked the correct outright winner.")
+                    
+                st.markdown("**Model Expectation vs. Actual Reality**")
+                st.bar_chart(audit_df[["Model Expectation", "Actual Outcome"]], color=["#1f77b4", "#2ca02c"], stack=False)
+                st.caption("This chart visually pairs **what your model expected to happen** (Blue) alongside **what actually happened on the field** (Green). A highly accurate prediction means the two bars are nearly identical in height and direction.")
+                
+                st.markdown("**Raw Margin Ledger**")
+                st.dataframe(audit_df, use_container_width=True)
+                audit_done = True
             else:
-                c3.metric("Model vs. Vegas Accuracy", "Awaiting Vegas lines")
+                st.info(f"Model audit data for the {st.session_state.selected_team} will populate here once completed game results are processed by the pipeline.")
+
+        # --- TAB 2: LEAGUE-WIDE MACRO AUDIT ---
+        with tab_league:
+            macro_games = audit_raw[audit_raw['result'].notna() & (audit_raw['season'] == CURRENT_YEAR)].copy()
+            if not macro_games.empty:
+                macro_games['abs_err'] = abs(macro_games['result'] - macro_games['model_margin'])
                 
-            st.markdown("**Prediction Accuracy Tracker (Lower Bars are Better)**")
-            st.bar_chart(error_df, color=["#1f77b4", "#d62728"] if mean_vegas_err is not None else ["#1f77b4"])
-            st.caption("This chart tracks **Prediction Error**. It measures exactly how many points off the predictions were from the final score. **Lower bars mean a more accurate prediction.**")
-            
-            st.markdown("**Raw Margin Ledger**")
-            st.dataframe(audit_df, use_container_width=True)
-            
-            audit_done = True
+                def check_win(row):
+                    if (row['result'] > 0 and row['model_margin'] > 0) or (row['result'] < 0 and row['model_margin'] < 0) or (row['result'] == 0 and round(row['model_margin']) == 0):
+                        return 1
+                    return 0
+                    
+                macro_games['correct'] = macro_games.apply(check_win, axis=1)
+                
+                overall_mae = macro_games['abs_err'].mean()
+                overall_win = macro_games['correct'].mean() * 100.0
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("League Games Audited", f"{len(macro_games)} Game(s)")
+                c2.metric("League-Wide Mean Error", f"±{overall_mae:.1f} pts", help="The average point error across all NFL games played so far this season.")
+                c3.metric("League-Wide Win/Loss Accuracy", f"{overall_win:.1f}%", help="The model's overall straight-up record across the entire NFL.")
+                
+                st.markdown("---")
+                colA, colB = st.columns(2)
+                macro_games['Matchup'] = macro_games['away_team'] + " @ " + macro_games['home_team'] + " (Wk " + macro_games['week'].astype(int).astype(str) + ")"
+                
+                with colA:
+                    st.success("**🎯 Top 3 Best Predictions (Closest Hits)**")
+                    best = macro_games.nsmallest(3, 'abs_err')
+                    for _, row in best.iterrows():
+                        st.markdown(f"- **{row['Matchup']}**: Off by just **{row['abs_err']:.1f} pts**")
+                        
+                with colB:
+                    st.error("**⚠️ Top 3 Worst Whiffs (Biggest Misses)**")
+                    worst = macro_games.nlargest(3, 'abs_err')
+                    for _, row in worst.iterrows():
+                        st.markdown(f"- **{row['Matchup']}**: Off by **{row['abs_err']:.1f} pts**")
+            else:
+                st.info("League-wide metrics will populate here once completed game results for the current season are processed.")
+
     except Exception:
         pass
-
-if not audit_done:
-    st.info(f"Model audit data for the {st.session_state.selected_team} will populate here once completed game results are processed by the pipeline.")
