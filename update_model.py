@@ -9,7 +9,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
-# Canonical abbreviations
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 AFC_TEAMS = {'BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX', 'KC', 'LAC', 'LV', 'MIA', 'NE', 'NYJ', 'PIT', 'TEN'}
 NFC_TEAMS = {'ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR', 'MIN', 'NO', 'NYG', 'PHI', 'SEA', 'SF', 'TB', 'WAS'}
@@ -46,19 +45,14 @@ def main():
     all_teams = sorted(list(set(sched['home_team'].unique()) | set(sched['away_team'].unique())))
 
     # -------------------------------------------------------------------------
-    # PART A: FEATURE ENGINEERING (Garbage Time & Explosiveness Added)
+    # PART A: FEATURE ENGINEERING
     # -------------------------------------------------------------------------
-    print("Engineering Context-Aware Features (Garbage Time Filtered, Explosiveness Added)...")
-    
-    # Garbage Time Filter: Remove 4th Qtr plays where Win Prob > 98% or < 2%
     pbp['is_garbage'] = ((pbp['qtr'] == 4) & ((pbp['wp'] > 0.98) | (pbp['wp'] < 0.02)))
     pbp = pbp[~pbp['is_garbage']].copy()
     
     pbp['is_early_pass'] = ((pbp['pass'] == 1) & (pbp['down'].isin([1.0, 2.0]))).astype(int)
     pbp['is_rush'] = (pbp['rush'] == 1).astype(int)
     pbp['success'] = (pbp['epa'] > 0).astype(int)
-    
-    # Explosive Play Definition: >=20 yd pass OR >=12 yd rush
     pbp['is_explosive'] = (((pbp['pass'] == 1) & (pbp['yards_gained'] >= 20)) | ((pbp['rush'] == 1) & (pbp['yards_gained'] >= 12))).astype(int)
     
     pbp['early_pass_epa'] = np.where(pbp['is_early_pass'] == 1, pbp['epa'], np.nan)
@@ -117,9 +111,9 @@ def main():
     sched = pd.merge(sched, away_features, on=['game_id', 'away_team'], how='left')
 
     # -------------------------------------------------------------------------
-    # PART B: MODEL TRAINING
+    # PART B: MODEL TRAINING & LIVE WEIGHT EXTRACTION
     # -------------------------------------------------------------------------
-    print("Training Machine Learning Pipelines...")
+    print("Training Pipelines & Extracting AI Brain Weights...")
     completed = sched[sched['result'].notna()].copy()
     completed = completed.sort_values(by=['season', 'week']).reset_index(drop=True)
     completed = completed.dropna(subset=['home_off_success', 'away_off_success'])
@@ -145,6 +139,21 @@ def main():
     margin_pipe = Pipeline([('scaler', StandardScaler()), ('model', RidgeCV(cv=tscv))])
     margin_pipe.fit(X, y_margin)
 
+    # BRAND NEW: Extracting the actual feature weights from the RidgeCV regression
+    try:
+        coefs = margin_pipe.named_steps['model'].coef_
+        imp_dict = {}
+        for feat, w in zip(features, coefs):
+            base_name = feat.replace('home_', '').replace('away_', '').replace('_', ' ').title()
+            if base_name not in imp_dict: imp_dict[base_name] = 0.0
+            imp_dict[base_name] += abs(w)
+            
+        w_df = pd.DataFrame(list(imp_dict.items()), columns=['Feature', 'Importance']).sort_values('Importance', ascending=False)
+        w_df.to_csv("feature_weights.csv", index=False)
+    except Exception as e:
+        print(f"Could not export feature weights: {e}")
+
+    # Out-of-Sample Logging
     if len(completed) > 50:
         split_idx = int(len(completed) * 0.8)
         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
@@ -205,8 +214,9 @@ def main():
         ratings[t] = 1500.0 + (expected_pt_diff * (400.0 / 14.0))
 
     # -------------------------------------------------------------------------
-    # PART D: COMPREHENSIVE SEASON PREDICTIONS & AUDIT TRAIL
+    # PART D: PREDICTIONS & IMMUTABLE LEDGER
     # -------------------------------------------------------------------------
+    print("Generating Season Predictions & Saving Immutable Ledger...")
     season_games = sched[sched['season'] == current_year].copy()
     playoff_probs = {t: 50.0 for t in all_teams}
     
@@ -229,14 +239,40 @@ def main():
         probs = prob_pipe.predict_proba(X_season)
         season_games['home_win_prob'] = probs[:, 1]
         season_games['away_win_prob'] = probs[:, 0]
-        
         season_games['model_margin'] = margin_pipe.predict(X_season)
         season_games['market_margin'] = -season_games['spread_line']
         season_games['home_edge'] = season_games['model_margin'] - season_games['market_margin'].fillna(0)
         
         out_cols = ['game_id', 'season', 'week', 'home_team', 'away_team', 'home_win_prob', 'away_win_prob', 'model_margin', 'market_margin', 'home_edge', 'result']
-        season_games[[c for c in out_cols if c in season_games.columns]].to_csv("weekly_predictions.csv", index=False)
+        fresh_preds = season_games[[c for c in out_cols if c in season_games.columns]]
 
+        # IMMUTABLE LEDGER LOGIC: Never overwrite past predictions.
+        pred_file = "weekly_predictions.csv"
+        if os.path.exists(pred_file):
+            old_preds = pd.read_csv(pred_file).dropna(subset=['model_margin'])
+            
+            # Identify games that have already kicked off (result is not null in our master schedule)
+            completed_games = sched[sched['result'].notna()]['game_id'].tolist()
+            
+            # Lock in the historical predictions for completed games
+            locked_preds = old_preds[old_preds['game_id'].isin(completed_games)].copy()
+            
+            # Use fresh predictions ONLY for games that haven't happened yet
+            upcoming_preds = fresh_preds[~fresh_preds['game_id'].isin(locked_preds['game_id'])]
+            
+            # Combine locked past predictions with fresh future predictions
+            final_preds = pd.concat([locked_preds, upcoming_preds]).drop_duplicates(subset=['game_id'], keep='last')
+            
+            # Sync the actual final results back into the ledger so the app can chart them
+            final_preds = final_preds.drop(columns=['result'], errors='ignore')
+            final_preds = pd.merge(final_preds, sched[['game_id', 'result']], on='game_id', how='left')
+        else:
+            final_preds = fresh_preds
+
+        final_preds.to_csv(pred_file, index=False)
+        print("Exported Immutable Prediction Ledger to weekly_predictions.csv.")
+
+        # Monte Carlo Simulation
         upcoming = season_games[season_games['result'].isna()]
         if not upcoming.empty:
             base_wins = {t: 0.0 for t in all_teams}
@@ -305,7 +341,6 @@ def main():
         rank_df['Off'] = rank_df['raw_off'].rank(ascending=False, method='min').astype(int)
         rank_df['Def'] = rank_df['raw_def'].rank(ascending=True, method='min').astype(int)
         rank_df[['abbr', 'Off', 'Def', 'TO', 'SOS', 'Rating', 'BasePlayoff']].to_csv("team_rankings.csv", index=False)
-        print("Exported team_rankings.csv successfully.")
 
 if __name__ == "__main__":
     main()
