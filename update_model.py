@@ -9,7 +9,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
-# Canonical 32-team abbreviations matching ESPN and frontend interfaces
+# Canonical 32-team abbreviations
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 AFC_TEAMS = {'BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX', 'KC', 'LAC', 'LV', 'MIA', 'NE', 'NYJ', 'PIT', 'TEN'}
 NFC_TEAMS = {'ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR', 'MIN', 'NO', 'NYG', 'PHI', 'SEA', 'SF', 'TB', 'WAS'}
@@ -27,7 +27,7 @@ def main():
     years_to_pull = [current_year - 3, current_year - 2, current_year - 1, current_year]
     print(f"[{datetime.datetime.now()}] Ingesting data for seasons {years_to_pull}...")
     
-    # 1. Pull & Normalize Data
+    # 1. Ingest Data
     try:
         raw_sched = nfl.import_schedules(years_to_pull)
         raw_pbp = nfl.import_pbp_data(years_to_pull)
@@ -47,9 +47,9 @@ def main():
     all_teams = sorted(list(set(sched['home_team'].unique()) | set(sched['away_team'].unique())))
 
     # -------------------------------------------------------------------------
-    # PART A: ADVANCED FEATURE ENGINEERING
+    # PART A: FEATURE ENGINEERING
     # -------------------------------------------------------------------------
-    print("Engineering Early-Down EPA & Expected Turnover metrics...")
+    print("Engineering Early-Down EPA & Luck-Regressed Turnovers...")
     pbp['is_early_pass'] = ((pbp['pass'] == 1) & (pbp['down'].isin([1.0, 2.0]))).astype(int)
     pbp['is_rush'] = (pbp['rush'] == 1).astype(int)
     pbp['success'] = (pbp['epa'] > 0).astype(int)
@@ -108,9 +108,9 @@ def main():
     sched = pd.merge(sched, away_features, on=['game_id', 'away_team'], how='left')
 
     # -------------------------------------------------------------------------
-    # PART B: TIME-SERIES TUNED ML
+    # PART B: MODEL TRAINING
     # -------------------------------------------------------------------------
-    print("Tuning Hyperparameters & Training Engine...")
+    print("Training Machine Learning Pipelines...")
     completed = sched[sched['result'].notna()].copy()
     completed = completed.sort_values(by=['season', 'week']).reset_index(drop=True)
     completed = completed.dropna(subset=['home_off_success', 'away_off_success'])
@@ -136,6 +136,7 @@ def main():
     margin_pipe = Pipeline([('scaler', StandardScaler()), ('model', RidgeCV(cv=tscv))])
     margin_pipe.fit(X, y_margin)
 
+    # Historical Out-of-Sample Logging
     if len(completed) > 50:
         split_idx = int(len(completed) * 0.8)
         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
@@ -167,9 +168,8 @@ def main():
         m_df.to_csv(metrics_file, index=False)
 
     # -------------------------------------------------------------------------
-    # PART C: DYNAMIC TEAM POWER RATINGS
+    # PART C: POWER RATINGS
     # -------------------------------------------------------------------------
-    print("Projecting True Team Power Ratings via Margin Regression...")
     latest_metrics = {}
     for t in all_teams:
         curr = team_games[(team_games['season'] == ranking_year) & (team_games['team'] == t)]
@@ -181,12 +181,10 @@ def main():
 
     avg_features = X.mean().to_dict()
     ratings = {}
-    
     for t in all_teams:
         mock_game = avg_features.copy()
         mock_game['spread_line'] = 0.0 
         mock_game['total_line'] = 45.0 
-        
         mock_game['home_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
         mock_game['home_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
         mock_game['home_off_success'] = latest_metrics[t]['off_success']
@@ -197,66 +195,73 @@ def main():
         
         mock_df = pd.DataFrame([mock_game])[features]
         expected_pt_diff = margin_pipe.predict(mock_df)[0]
-        ratings[t] = 1500.0 + (expected_pt_diff * (400.0 / 14.0)) 
+        ratings[t] = 1500.0 + (expected_pt_diff * (400.0 / 14.0))
 
     # -------------------------------------------------------------------------
-    # PART D: PREDICT MATCHUPS
+    # PART D: COMPREHENSIVE SEASON PREDICTIONS & AUDIT TRAIL
     # -------------------------------------------------------------------------
-    upcoming = sched[(sched['season'] == current_year) & (sched['result'].isna())].copy()
+    print("Generating Season Predictions & Audit Ledger...")
+    season_games = sched[sched['season'] == current_year].copy()
     playoff_probs = {t: 50.0 for t in all_teams}
-    if not upcoming.empty:
+    
+    if not season_games.empty:
         for t in all_teams:
-            upcoming[f'home_{t}'] = upcoming['home_team'] == t
-            for prefix, home_away in [('home', 'home_team'), ('away', 'away_team')]:
-                upcoming.loc[upcoming[home_away] == t, f'{prefix}_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
-                upcoming.loc[upcoming[home_away] == t, f'{prefix}_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
-                upcoming.loc[upcoming[home_away] == t, f'{prefix}_off_success'] = latest_metrics[t]['off_success']
-                upcoming.loc[upcoming[home_away] == t, f'{prefix}_def_early_pass_epa'] = latest_metrics[t]['def_early_pass_epa']
-                upcoming.loc[upcoming[home_away] == t, f'{prefix}_def_rush_epa'] = latest_metrics[t]['def_rush_epa']
-                upcoming.loc[upcoming[home_away] == t, f'{prefix}_def_success'] = latest_metrics[t]['def_success']
-                upcoming.loc[upcoming[home_away] == t, f'{prefix}_exp_to_margin'] = latest_metrics[t]['exp_to_margin']
+            season_games[f'home_{t}'] = season_games['home_team'] == t
+            for prefix, col in [('home', 'home_team'), ('away', 'away_team')]:
+                season_games.loc[season_games[col] == t, f'{prefix}_off_early_pass_epa'] = latest_metrics[t]['off_early_pass_epa']
+                season_games.loc[season_games[col] == t, f'{prefix}_off_rush_epa'] = latest_metrics[t]['off_rush_epa']
+                season_games.loc[season_games[col] == t, f'{prefix}_off_success'] = latest_metrics[t]['off_success']
+                season_games.loc[season_games[col] == t, f'{prefix}_def_early_pass_epa'] = latest_metrics[t]['def_early_pass_epa']
+                season_games.loc[season_games[col] == t, f'{prefix}_def_rush_epa'] = latest_metrics[t]['def_rush_epa']
+                season_games.loc[season_games[col] == t, f'{prefix}_def_success'] = latest_metrics[t]['def_success']
+                season_games.loc[season_games[col] == t, f'{prefix}_exp_to_margin'] = latest_metrics[t]['exp_to_margin']
 
-        X_upcoming = upcoming[features].fillna(0)
+        X_season = season_games[features].fillna(0)
         
-        probs = prob_pipe.predict_proba(X_upcoming)
-        upcoming['home_win_prob'] = probs[:, 1]
-        upcoming['away_win_prob'] = probs[:, 0]
+        probs = prob_pipe.predict_proba(X_season)
+        season_games['home_win_prob'] = probs[:, 1]
+        season_games['away_win_prob'] = probs[:, 0]
         
-        # POLARITY FIX: Market expects a home point margin equal to the inverse of the Vegas spread line.
-        upcoming['model_margin'] = margin_pipe.predict(X_upcoming)
-        upcoming['market_margin'] = -upcoming['spread_line'].fillna(0)
-        upcoming['home_edge'] = upcoming['model_margin'] - upcoming['market_margin']
+        season_games['model_margin'] = margin_pipe.predict(X_season)
+        season_games['market_margin'] = -season_games['spread_line']
+        season_games['home_edge'] = season_games['model_margin'] - season_games['market_margin'].fillna(0)
         
-        upcoming[['game_id', 'season', 'week', 'home_team', 'away_team', 'home_win_prob', 'away_win_prob', 'model_margin', 'market_margin', 'home_edge']].to_csv("weekly_predictions.csv", index=False)
+        # Save complete audit record (completed + upcoming)
+        out_cols = ['game_id', 'season', 'week', 'home_team', 'away_team', 'home_win_prob', 'away_win_prob', 'model_margin', 'market_margin', 'home_edge', 'result']
+        season_games[[c for c in out_cols if c in season_games.columns]].to_csv("weekly_predictions.csv", index=False)
+        print("Exported complete audit trail to weekly_predictions.csv.")
 
-        base_wins = {t: 0.0 for t in all_teams}
-        for _, g in sched[(sched['season'] == current_year) & (sched['result'].notna())].iterrows():
-            if g['result'] > 0: base_wins[g['home_team']] += 1.0
-            elif g['result'] < 0: base_wins[g['away_team']] += 1.0
-            else: base_wins[g['home_team']] += 0.5; base_wins[g['away_team']] += 0.5
+        # Monte Carlo Simulation on Remaining Unplayed Games
+        upcoming = season_games[season_games['result'].isna()]
+        if not upcoming.empty:
+            base_wins = {t: 0.0 for t in all_teams}
+            for _, g in season_games[season_games['result'].notna()].iterrows():
+                if g['result'] > 0: base_wins[g['home_team']] += 1.0
+                elif g['result'] < 0: base_wins[g['away_team']] += 1.0
+                else: base_wins[g['home_team']] += 0.5; base_wins[g['away_team']] += 0.5
 
-        n_sims = 10000
-        sim_draws = np.random.rand(n_sims, len(upcoming))
-        sim_hw = (sim_draws < upcoming['home_win_prob'].values).astype(float)
-        sim_aw = 1.0 - sim_hw
-        
-        sim_st = {t: np.full(n_sims, base_wins.get(t, 0.0)) for t in all_teams}
-        for i, (h, a) in enumerate(zip(upcoming['home_team'].values, upcoming['away_team'].values)):
-            sim_st[h] += sim_hw[:, i]
-            sim_st[a] += sim_aw[:, i]
+            n_sims = 10000
+            sim_draws = np.random.rand(n_sims, len(upcoming))
+            sim_hw = (sim_draws < upcoming['home_win_prob'].values).astype(float)
+            sim_aw = 1.0 - sim_hw
             
-        for t in all_teams: sim_st[t] += np.random.rand(n_sims) * 0.1
-        
-        afc_m = np.array([sim_st[t] for t in [x for x in all_teams if TEAM_CONF.get(x) == 'AFC']])
-        nfc_m = np.array([sim_st[t] for t in [x for x in all_teams if TEAM_CONF.get(x) == 'NFC']])
-        afc_p = afc_m >= np.partition(afc_m, -7, axis=0)[-7, :]
-        nfc_p = nfc_m >= np.partition(nfc_m, -7, axis=0)[-7, :]
-        
-        for i, t in enumerate([x for x in all_teams if TEAM_CONF.get(x) == 'AFC']): playoff_probs[t] = (np.sum(afc_p[i, :]) / n_sims) * 100.0
-        for i, t in enumerate([x for x in all_teams if TEAM_CONF.get(x) == 'NFC']): playoff_probs[t] = (np.sum(nfc_p[i, :]) / n_sims) * 100.0
+            sim_st = {t: np.full(n_sims, base_wins.get(t, 0.0)) for t in all_teams}
+            for i, (h, a) in enumerate(zip(upcoming['home_team'].values, upcoming['away_team'].values)):
+                sim_st[h] += sim_hw[:, i]
+                sim_st[a] += sim_aw[:, i]
+                
+            for t in all_teams: sim_st[t] += np.random.rand(n_sims) * 0.1
+            
+            afc_m = np.array([sim_st[t] for t in [x for x in all_teams if TEAM_CONF.get(x) == 'AFC']])
+            nfc_m = np.array([sim_st[t] for t in [x for x in all_teams if TEAM_CONF.get(x) == 'NFC']])
+            afc_p = afc_m >= np.partition(afc_m, -7, axis=0)[-7, :]
+            nfc_p = nfc_m >= np.partition(nfc_m, -7, axis=0)[-7, :]
+            
+            for i, t in enumerate([x for x in all_teams if TEAM_CONF.get(x) == 'AFC']): playoff_probs[t] = (np.sum(afc_p[i, :]) / n_sims) * 100.0
+            for i, t in enumerate([x for x in all_teams if TEAM_CONF.get(x) == 'NFC']): playoff_probs[t] = (np.sum(nfc_p[i, :]) / n_sims) * 100.0
 
     # -------------------------------------------------------------------------
-    # PART E: EXPORT RANKINGS FOR DASHBOARD
+    # PART E: EXPORT RANKINGS
     # -------------------------------------------------------------------------
     rank_games_hist = sched[(sched['season'] == ranking_year) & (sched['result'].notna())]
     hist_wins = {t: 0.0 for t in all_teams}
