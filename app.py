@@ -7,6 +7,7 @@ import nfl_data_py as nfl
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
+from fantasy_pipeline import fetch_and_parse_rosters
 
 CURRENT_YEAR = datetime.datetime.now().year
 
@@ -221,6 +222,14 @@ def calculate_travel_distance(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = (math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
     return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
+
+@st.cache_data(ttl=600)  
+def load_live_rosters():
+    try:
+        return fetch_and_parse_rosters("oauth2.json")
+    except Exception as e:
+        st.sidebar.error(f"Fantasy Roster Sync Failed: {e}")
+        return pd.DataFrame()
 
 # Sidebar
 if "selected_team" not in st.session_state: st.session_state.selected_team = "Kansas City Chiefs"
@@ -503,6 +512,78 @@ if output and output.get("last_object_clicked_tooltip"):
     if clicked_name in team_names and clicked_name != st.session_state.selected_team:
         st.session_state.selected_team = clicked_name
         st.rerun()
+
+# =====================================================================
+# ZERO-SUM FANTASY COMMAND CENTER & MANAGERIAL AUDIT
+# =====================================================================
+st.markdown("---")
+st.header("⚡ Live Fantasy Intelligence & Managerial Audit")
+
+live_roster_df = load_live_rosters()
+
+if not live_roster_df.empty:
+    available_leagues = live_roster_df["League"].unique().tolist()
+    
+    col_sel, _ = st.columns([1, 2])
+    with col_sel:
+        selected_league = st.selectbox("Select Active Fantasy League:", available_leagues)
+    
+    league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
+    
+    tab_starters, tab_bench, tab_manager_audit = st.tabs(["🔥 Active Starters", "🛋️ Bench & Reserves", "⚖️ Managerial Bias & Risk Audit"])
+    
+    with tab_starters:
+        starters = league_roster[~league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
+        st.dataframe(
+            starters[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Health_Status"]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with tab_bench:
+        bench = league_roster[league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
+        st.dataframe(
+            bench[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Health_Status"]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with tab_manager_audit:
+        st.subheader("Algorithmic Inefficiency Scans")
+        audit_triggered = False
+        
+        # 1. Negative Opportunity Cost: Backup Specialists
+        kickers_on_bench = bench[bench["Real_Pos"] == "K"]
+        defs_on_bench = bench[bench["Real_Pos"] == "DEF"]
+        
+        if not kickers_on_bench.empty:
+            audit_triggered = True
+            for _, k in kickers_on_bench.iterrows():
+                st.warning(f"⚠️ **Negative Opportunity Cost Alert:** Stashing backup kicker **{k['Player']} ({k['NFL_Team']})** on the bench blocks roster flexibility. Drop immediately for a high-leverage skill position stash.")
+                
+        if not defs_on_bench.empty:
+            audit_triggered = True
+            for _, d in defs_on_bench.iterrows():
+                st.warning(f"⚠️ **Negative Opportunity Cost Alert:** Stashing backup defense **{d['Player']} ({d['NFL_Team']})** is mathematically suboptimal. Consolidate your bench.")
+
+        # 2. Starting Roster Injury Exposure
+        injured_starters = starters[starters["Health_Status"].isin(["Q", "D", "O", "IR"])]
+        if not injured_starters.empty:
+            audit_triggered = True
+            for _, s in injured_starters.iterrows():
+                st.error(f"🚨 **Starting Lineup Vulnerability:** **{s['Player']} ({s['NFL_Team']})** is currently deployed in your **{s['Fantasy_Slot']}** slot despite a **{s['Health_Status']}** injury status. Execute contingency protocol.")
+                
+        # 3. Misplaced IR Eligibility Optimization
+        ir_eligible_on_bench = bench[(bench["Health_Status"].isin(["IR", "IR-R", "O"])) & (bench["Fantasy_Slot"] == "BN")]
+        if not ir_eligible_on_bench.empty:
+            audit_triggered = True
+            for _, ir_p in ir_eligible_on_bench.iterrows():
+                st.info(f"💡 **Roster Optimization Available:** **{ir_p['Player']}** carries an **{ir_p['Health_Status']}** tag but is occupying a standard bench slot. Shift to IR slot to unlock a free waiver acquisition.")
+
+        if not audit_triggered:
+            st.success("✅ **Zero-Sum Validation:** No immediate structural inefficiencies detected on the active roster. Deployment is optimal.")
+else:
+    st.info("Live Yahoo Fantasy Data currently unavailable. Ensure `oauth2.json` is deployed and valid.")
 
 # -------------------------------------------------------------------------
 # 9. TRUE MODEL AUDIT: EXPECTATION VS. REALITY & LEAGUE OVERVIEW
