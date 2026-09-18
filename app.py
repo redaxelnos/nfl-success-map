@@ -8,6 +8,16 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 from fantasy_pipeline import fetch_and_parse_rosters
+import json
+
+# Rebuild oauth2.json dynamically from Streamlit Secrets in cloud deployments
+if not os.path.exists("oauth2.json"):
+    if "yahoo" in st.secrets:
+        with open("oauth2.json", "w") as f:
+            json.dump(dict(st.secrets["yahoo"]), f)
+    elif "YAHOO_KEYS" in st.secrets:
+        with open("oauth2.json", "w") as f:
+            f.write(st.secrets["YAHOO_KEYS"])
 
 CURRENT_YEAR = datetime.datetime.now().year
 
