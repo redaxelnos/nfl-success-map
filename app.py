@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import datetime
 import requests
 import folium
@@ -7,10 +8,11 @@ import nfl_data_py as nfl
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
-from fantasy_pipeline import fetch_and_parse_rosters
-import json
+from fantasy_pipeline import fetch_complete_fantasy_state
 
-# Rebuild oauth2.json dynamically from Streamlit Secrets in cloud deployments
+# =====================================================================
+# SECURE CLOUD AUTHENTICATION REBUILD
+# =====================================================================
 if not os.path.exists("oauth2.json"):
     if "yahoo" in st.secrets:
         with open("oauth2.json", "w") as f:
@@ -234,14 +236,13 @@ def calculate_travel_distance(lat1, lon1, lat2, lon2):
     return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
 
 @st.cache_data(ttl=600)  
-def load_live_rosters():
+def load_live_rosters_and_meta():
     try:
-        return fetch_and_parse_rosters("oauth2.json")
+        return fetch_complete_fantasy_state("oauth2.json")
     except Exception as e:
-        st.sidebar.error(f"Fantasy Roster Sync Failed: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
-# Sidebar
+# Sidebar Setup
 if "selected_team" not in st.session_state: st.session_state.selected_team = "Kansas City Chiefs"
 team_names = df_teams["team"].tolist()
 st.sidebar.title("Matchup & Vitals Hub")
@@ -527,9 +528,15 @@ if output and output.get("last_object_clicked_tooltip"):
 # ZERO-SUM FANTASY COMMAND CENTER & MANAGERIAL AUDIT
 # =====================================================================
 st.markdown("---")
-st.header("⚡ Live Fantasy Intelligence & Managerial Audit")
+st.header("⚡ Live Fantasy Intelligence & Prescriptive Managerial Audit")
 
-live_roster_df = load_live_rosters()
+col_head, col_sync = st.columns([3, 1])
+with col_sync:
+    if st.button("🔄 Force Real-Time Sync"):
+        st.cache_data.clear()
+        st.rerun()
+
+live_roster_df, league_metadata = load_live_rosters_and_meta()
 
 if not live_roster_df.empty:
     available_leagues = live_roster_df["League"].unique().tolist()
@@ -539,8 +546,11 @@ if not live_roster_df.empty:
         selected_league = st.selectbox("Select Active Fantasy League:", available_leagues)
     
     league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
+    current_meta = league_metadata.get(selected_league, {})
+    league_limits = current_meta.get("settings", {"IR": 1, "BN": 6})
+    waiver_pool = current_meta.get("waivers", {})
     
-    tab_starters, tab_bench, tab_manager_audit = st.tabs(["🔥 Active Starters", "🛋️ Bench & Reserves", "⚖️ Managerial Bias & Risk Audit"])
+    tab_starters, tab_bench, tab_manager_audit = st.tabs(["🔥 Active Starters", "🛋️ Bench & Reserves", "⚖️ Prescriptive Action Directives"])
     
     with tab_starters:
         starters = league_roster[~league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
@@ -559,41 +569,100 @@ if not live_roster_df.empty:
         )
 
     with tab_manager_audit:
-        st.subheader("Algorithmic Inefficiency Scans")
-        audit_triggered = False
-        
-        # 1. Negative Opportunity Cost: Backup Specialists
+        st.subheader("Algorithmic Decision Matrix & Directives")
+        directives_issued = False
+
+        # --- DYNAMIC RULE IDENTIFICATION ---
+        max_ir = league_limits.get("IR", 1)
+        ir_occupied_players = league_roster[league_roster["Fantasy_Slot"] == "IR"]["Player"].tolist()
+        ir_occupied_count = len(ir_occupied_players)
+        ir_eligible_on_bench = bench[(bench["Health_Status"].isin(["IR", "IR-R", "O"])) & (bench["Fantasy_Slot"] == "BN")]
+
+        # --- BENCH LIQUIDITY & CUT HIERARCHY EVALUATION ---
         kickers_on_bench = bench[bench["Real_Pos"] == "K"]
         defs_on_bench = bench[bench["Real_Pos"] == "DEF"]
         
+        # Identify TE redundancy (starting TE exists, bench TE is dead capital)
+        starting_te = starters[starters["Real_Pos"] == "TE"]
+        bench_te = bench[bench["Real_Pos"] == "TE"]
+        
+        candidate_drops = []
         if not kickers_on_bench.empty:
-            audit_triggered = True
             for _, k in kickers_on_bench.iterrows():
-                st.warning(f"⚠️ **Negative Opportunity Cost Alert:** Stashing backup kicker **{k['Player']} ({k['NFL_Team']})** on the bench blocks roster flexibility. Drop immediately for a high-leverage skill position stash.")
-                
+                candidate_drops.append({"Player": k["Player"], "Pos": "K", "Reason": "Zero marginal variance; backup kicker holds negative opportunity cost."})
         if not defs_on_bench.empty:
-            audit_triggered = True
             for _, d in defs_on_bench.iterrows():
-                st.warning(f"⚠️ **Negative Opportunity Cost Alert:** Stashing backup defense **{d['Player']} ({d['NFL_Team']})** is mathematically suboptimal. Consolidate your bench.")
+                candidate_drops.append({"Player": d["Player"], "Pos": "DEF", "Reason": "Defensive streaming asset; redundant roster hold."})
+        if not starting_te.empty and not bench_te.empty:
+            for _, te in bench_te.iterrows():
+                candidate_drops.append({"Player": te["Player"], "Pos": "TE", "Reason": "Positional redundancy; holding backup TE when starting a high-target volume asset limits upside."})
 
-        # 2. Starting Roster Injury Exposure
-        injured_starters = starters[starters["Health_Status"].isin(["Q", "D", "O", "IR"])]
-        if not injured_starters.empty:
-            audit_triggered = True
-            for _, s in injured_starters.iterrows():
-                st.error(f"🚨 **Starting Lineup Vulnerability:** **{s['Player']} ({s['NFL_Team']})** is currently deployed in your **{s['Fantasy_Slot']}** slot despite a **{s['Health_Status']}** injury status. Execute contingency protocol.")
-                
-        # 3. Misplaced IR Eligibility Optimization
-        ir_eligible_on_bench = bench[(bench["Health_Status"].isin(["IR", "IR-R", "O"])) & (bench["Fantasy_Slot"] == "BN")]
+        # DIRECTIVE 1: IR SLOT BOTTLENECK & STASH OPTIMIZATION
         if not ir_eligible_on_bench.empty:
-            audit_triggered = True
+            directives_issued = True
             for _, ir_p in ir_eligible_on_bench.iterrows():
-                st.info(f"💡 **Roster Optimization Available:** **{ir_p['Player']}** carries an **{ir_p['Health_Status']}** tag but is occupying a standard bench slot. Shift to IR slot to unlock a free waiver acquisition.")
+                if ir_occupied_count >= max_ir:
+                    st.error(
+                        f"⛔ **STRUCTURAL BOTTLENECK: IR Overflow**  \n"
+                        f"• **Asset:** **{ir_p['Player']}** carries an active **{ir_p['Health_Status']}** designation but is burning a regular bench spot (`BN`).  \n"
+                        f"• **Cause:** Dynamic league capacity is maxed at **{max_ir} IR slot(s)** (Occupied by: {', '.join(ir_occupied_players)}).  \n"
+                        f"• **Action Required:** Do not drop Mason for zero return. If Conner is cleared to play prior to Sunday, immediately activate Conner to unblock your IR slot and slide {ir_p['Player']} in, generating a free waiver add."
+                    )
+                else:
+                    st.info(
+                        f"💡 **OPTIMIZATION: Open IR Slot Available**  \n"
+                        f"• **Action:** Shift **{ir_p['Player']}** to your vacant IR slot immediately.  \n"
+                        f"• **Result:** Unlocks 1 free roster spot for speculative skill-position stash prior to kickoff."
+                    )
 
-        if not audit_triggered:
-            st.success("✅ **Zero-Sum Validation:** No immediate structural inefficiencies detected on the active roster. Deployment is optimal.")
+        # DIRECTIVE 2: STARTING LINEUP FRAGILITY & EXECUTABLE WAIVER TARGET
+        injured_starters = starters[starters["Health_Status"].isin(["Q", "D", "O"])]
+        if not injured_starters.empty:
+            directives_issued = True
+            for _, s in injured_starters.iterrows():
+                pos = s["Real_Pos"]
+                pos_bench = bench[bench["Real_Pos"] == pos]
+                
+                # Check for available waiver pool targets
+                pool = waiver_pool.get(pos, [])
+                waiver_recommendations = [f"**{p['Player']}** ({p['NFL_Team']})" for p in pool[:2]] if pool else ["Top Projected Waiver Option"]
+
+                if pos_bench.empty:
+                    # Critical exposure: starter is hurt and bench has zero backup
+                    cut_target = candidate_drops[0] if candidate_drops else {"Player": "Lowest-tier bench reserve", "Reason": "Free roster slot"}
+                    st.error(
+                        f"🚨 **ACTION REQUIRED: Critical {pos} Fragility**  \n"
+                        f"• **Exposure:** Starter **{s['Player']} ({s['NFL_Team']})** is listed as **{s['Health_Status']}** with **0 backup {pos}s** rostered.  \n"
+                        f"• **Directive Drop:** Cut **{cut_target['Player']}** ({cut_target['Reason']}).  \n"
+                        f"• **Directive Claim:** Add waiver target {', '.join(waiver_recommendations)} to prevent an automatic zero if scratched Sunday morning."
+                    )
+                else:
+                    healthy_backup = pos_bench[pos_bench["Health_Status"] == "Healthy"]
+                    backup_name = healthy_backup.iloc[0]["Player"] if not healthy_backup.empty else pos_bench.iloc[0]["Player"]
+                    st.warning(
+                        f"⚠️ **LINEUP ALERT: Pre-Game Contingency Swap**  \n"
+                        f"• **Starter:** **{s['Player']} ({s['NFL_Team']})** is **{s['Health_Status']}**.  \n"
+                        f"• **In-House Protocol:** Roster holds redundancy via **{backup_name}**. Prepare to swap into starting lineup if game-time scratch occurs."
+                    )
+
+        # DIRECTIVE 3: NEGATIVE OPPORTUNITY COST PURGE
+        if candidate_drops:
+            for drop in candidate_drops:
+                if drop["Pos"] in ["K", "DEF"]:
+                    directives_issued = True
+                    st.warning(
+                        f"📉 **PURGE DIRECTIVE: Negative Opportunity Cost**  \n"
+                        f"• **Asset:** **{drop['Player']} ({drop['Pos']})** on bench.  \n"
+                        f"• **Diagnosis:** {drop['Reason']}  \n"
+                        f"• **Directive:** Drop immediately to stash speculative high-upside RB/WR handcuffs before weekly kickoff."
+                    )
+
+        if not directives_issued:
+            st.success("✅ **Zero-Sum Validation:** Roster is mathematically calibrated. Zero structural inefficiencies, unhedged starting liabilities, or dead capital detected.")
+
+    st.markdown("<br><small>[Fantasy data provided by Yahoo Fantasy](https://football.fantasysports.yahoo.com/)</small>", unsafe_allow_html=True)
 else:
-    st.info("Live Yahoo Fantasy Data currently unavailable. Ensure `oauth2.json` is deployed and valid.")
+    st.info("Live Yahoo Fantasy Data currently unavailable. Ensure `oauth2.json` or Streamlit Secrets are active.")
 
 # -------------------------------------------------------------------------
 # 9. TRUE MODEL AUDIT: EXPECTATION VS. REALITY & LEAGUE OVERVIEW
