@@ -140,7 +140,3 @@ def fetch_complete_fantasy_state(oauth_file='oauth2.json'):
                 })
 
     return pd.DataFrame(roster_rows), league_meta
-
-if __name__ == "__main__":
-    df, meta = fetch_complete_fantasy_state()
-    print(df.to_string(index=False))
