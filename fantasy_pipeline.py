@@ -53,14 +53,10 @@ def fetch_top_available_players(oauth, league_key, position="QB", count=4):
     return available
 
 def fetch_complete_fantasy_state(oauth_file='oauth2.json'):
-    """
-    Primary execution pipeline: Returns (rosters_df, league_metadata_dict)
-    Now pulls exact live Yahoo projections to eliminate math proxies.
-    """
+    """Primary execution pipeline using the safe /roster endpoint."""
     oauth = get_authenticated_session(oauth_file)
     
-    # 1. Fetch User Teams
-    url = "https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/teams?format=json"
+    url = "https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/teams/roster?format=json"
     response = oauth.session.get(url, timeout=12)
     
     if response.status_code != 200:
@@ -97,46 +93,34 @@ def fetch_complete_fantasy_state(oauth_file='oauth2.json'):
                 "waivers": {"QB": waiver_qbs, "RB": waiver_rbs, "WR": waiver_wrs}
             }
 
-        # 2. Fetch specific team roster paired with live projected stats
-        proj_url = f"https://fantasysports.yahooapis.com/fantasy/v2/team/{team_key}/roster/players/stats;type=projected_week?format=json"
-        proj_res = oauth.session.get(proj_url, timeout=10)
-        
-        if proj_res.status_code == 200:
-            proj_data = proj_res.json()
-            roster_data = proj_data['fantasy_content']['team'][1]['roster']['0']['players']
+        roster_container = next((item for item in team if isinstance(item, dict) and 'roster' in item), None)
+        if not roster_container:
+            continue
             
-            for p_idx in range(roster_data['count']):
-                player = roster_data[str(p_idx)]['player']
-                details = player[0]
+        roster_data = roster_container['roster']['0']['players']
+        
+        for p_idx in range(roster_data['count']):
+            player = roster_data[str(p_idx)]['player']
+            details = player[0]
 
-                p_name = next((i['name']['full'] for i in details if isinstance(i, dict) and 'name' in i), "Unknown")
-                p_id = next((i['player_id'] for i in details if isinstance(i, dict) and 'player_id' in i), "Unknown")
-                nfl_team = next((i['editorial_team_abbr'] for i in details if isinstance(i, dict) and 'editorial_team_abbr' in i), "UNK").upper()
-                real_pos = next((i['primary_position'] for i in details if isinstance(i, dict) and 'primary_position' in i), "UNK")
-                status = next((i['status'] for i in details if isinstance(i, dict) and 'status' in i), "Healthy")
+            p_name = next((i['name']['full'] for i in details if isinstance(i, dict) and 'name' in i), "Unknown")
+            p_id = next((i['player_id'] for i in details if isinstance(i, dict) and 'player_id' in i), "Unknown")
+            nfl_team = next((i['editorial_team_abbr'] for i in details if isinstance(i, dict) and 'editorial_team_abbr' in i), "UNK").upper()
+            real_pos = next((i['primary_position'] for i in details if isinstance(i, dict) and 'primary_position' in i), "UNK")
+            status = next((i['status'] for i in details if isinstance(i, dict) and 'status' in i), "Healthy")
 
-                pos_data = next((i for i in player if isinstance(i, dict) and 'selected_position' in i), None)
-                fantasy_slot = next((sp['position'] for sp in pos_data['selected_position'] if 'position' in sp), "BN") if pos_data else "BN"
+            pos_data = next((i for i in player if isinstance(i, dict) and 'selected_position' in i), None)
+            fantasy_slot = next((sp['position'] for sp in pos_data['selected_position'] if 'position' in sp), "BN") if pos_data else "BN"
 
-                # Extract True Yahoo Live Projection
-                proj_pts = 0.0
-                pts_data = next((i for i in player if isinstance(i, dict) and 'player_projected_points' in i), None)
-                if pts_data:
-                    try:
-                        proj_pts = float(pts_data['player_projected_points'].get('total', 0.0))
-                    except ValueError:
-                        proj_pts = 0.0
-
-                roster_rows.append({
-                    "League": league_name,
-                    "Fantasy_Team": team_name,
-                    "Player": p_name,
-                    "NFL_Team": nfl_team,
-                    "Real_Pos": real_pos,
-                    "Fantasy_Slot": fantasy_slot,
-                    "Health_Status": status,
-                    "Player_ID": p_id,
-                    "Proj_Pts": proj_pts
-                })
+            roster_rows.append({
+                "League": league_name,
+                "Fantasy_Team": team_name,
+                "Player": p_name,
+                "NFL_Team": nfl_team,
+                "Real_Pos": real_pos,
+                "Fantasy_Slot": fantasy_slot,
+                "Health_Status": status,
+                "Player_ID": p_id
+            })
 
     return pd.DataFrame(roster_rows), league_meta
