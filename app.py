@@ -536,6 +536,46 @@ with col_sync:
         st.cache_data.clear()
         st.rerun()
 
+# ---------------------------------------------------------------------
+# ALGORITHMIC PROJECTION ENGINE
+# Evaluates start/sit logic mathematically based on team offense metrics
+# ---------------------------------------------------------------------
+def get_algorithmic_projection(player, nfl_team, pos, status):
+    pos_base = {"QB": 17.0, "RB": 11.0, "WR": 11.0, "TE": 8.0, "K": 8.0, "DEF": 7.0}
+    base = pos_base.get(pos, 9.0)
+    
+    try:
+        team_data = team_dict.get(nfl_team.upper(), {})
+        off_rank = float(team_data.get("Off", 16))
+    except Exception:
+        off_rank = 16.0
+        
+    team_modifier = (16 - off_rank) * 0.35 
+    
+    elite_players = {
+        "Christian McCaffrey": 9.0, "Garrett Wilson": 6.5, "George Pickens": 5.0, 
+        "Brock Purdy": 5.0, "Derrick Henry": 6.0, "Deebo Samuel Sr.": 4.0, 
+        "Joe Burrow": 5.0, "Amon-Ra St. Brown": 7.0, "Tee Higgins": 4.0,
+        "DeVonta Smith": 5.0, "James Cook III": 4.0, "Travis Etienne Jr.": 3.0,
+        "Jordan Love": 4.0, "CeeDee Lamb": 8.0, "Justin Jefferson": 8.0, "Breece Hall": 7.0
+    }
+    
+    fringe_players = {
+        "Tyjae Spears": -3.0, "Josh Downs": -2.0, "Jordan Mason": -2.0, "Harrison Mevis": -2.0
+    }
+    
+    team_modifier += elite_players.get(player, 0.0)
+    team_modifier += fringe_players.get(player, 0.0)
+    
+    val = base + team_modifier
+    
+    if status in ["O", "IR", "D", "IR-R"]:
+        val = 0.0
+    elif status == "Q":
+        val *= 0.65
+        
+    return max(0.0, round(val, 1))
+
 live_roster_df, league_metadata = load_live_rosters_and_meta()
 
 if not live_roster_df.empty:
@@ -546,6 +586,10 @@ if not live_roster_df.empty:
         selected_league = st.selectbox("Select Active Fantasy League:", available_leagues)
     
     league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
+    
+    # Inject algorithmic projections into the dataframe
+    league_roster["Alg_Proj"] = league_roster.apply(lambda r: get_algorithmic_projection(r["Player"], r["NFL_Team"], r["Real_Pos"], r["Health_Status"]), axis=1)
+
     current_meta = league_metadata.get(selected_league, {})
     league_limits = current_meta.get("settings", {"IR": 1, "BN": 6})
     waiver_pool = current_meta.get("waivers", {})
@@ -555,7 +599,7 @@ if not live_roster_df.empty:
     with tab_starters:
         starters = league_roster[~league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
         st.dataframe(
-            starters[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Health_Status"]],
+            starters[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Alg_Proj", "Health_Status"]],
             use_container_width=True,
             hide_index=True
         )
@@ -563,7 +607,7 @@ if not live_roster_df.empty:
     with tab_bench:
         bench = league_roster[league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
         st.dataframe(
-            bench[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Health_Status"]],
+            bench[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Alg_Proj", "Health_Status"]],
             use_container_width=True,
             hide_index=True
         )
@@ -572,32 +616,12 @@ if not live_roster_df.empty:
         st.subheader("Algorithmic Decision Matrix & Directives")
         directives_issued = False
 
-        # --- DYNAMIC RULE IDENTIFICATION ---
+        # --- RULE IDENTIFICATION & IR SCAN ---
         max_ir = league_limits.get("IR", 1)
-        ir_occupied_players = league_roster[league_roster["Fantasy_Slot"] == "IR"]["Player"].tolist()
+        ir_occupied_players = league_roster[league_roster["Fantasy_Slot"].isin(["IR", "IR-R"])]["Player"].tolist()
         ir_occupied_count = len(ir_occupied_players)
         ir_eligible_on_bench = bench[(bench["Health_Status"].isin(["IR", "IR-R", "O"])) & (bench["Fantasy_Slot"] == "BN")]
 
-        # --- BENCH LIQUIDITY & CUT HIERARCHY EVALUATION ---
-        kickers_on_bench = bench[bench["Real_Pos"] == "K"]
-        defs_on_bench = bench[bench["Real_Pos"] == "DEF"]
-        
-        # Identify TE redundancy (starting TE exists, bench TE is dead capital)
-        starting_te = starters[starters["Real_Pos"] == "TE"]
-        bench_te = bench[bench["Real_Pos"] == "TE"]
-        
-        candidate_drops = []
-        if not kickers_on_bench.empty:
-            for _, k in kickers_on_bench.iterrows():
-                candidate_drops.append({"Player": k["Player"], "Pos": "K", "Reason": "Zero marginal variance; backup kicker holds negative opportunity cost."})
-        if not defs_on_bench.empty:
-            for _, d in defs_on_bench.iterrows():
-                candidate_drops.append({"Player": d["Player"], "Pos": "DEF", "Reason": "Defensive streaming asset; redundant roster hold."})
-        if not starting_te.empty and not bench_te.empty:
-            for _, te in bench_te.iterrows():
-                candidate_drops.append({"Player": te["Player"], "Pos": "TE", "Reason": "Positional redundancy; holding backup TE when starting a high-target volume asset limits upside."})
-
-        # DIRECTIVE 1: IR SLOT BOTTLENECK & STASH OPTIMIZATION
         if not ir_eligible_on_bench.empty:
             directives_issued = True
             for _, ir_p in ir_eligible_on_bench.iterrows():
@@ -606,16 +630,64 @@ if not live_roster_df.empty:
                         f"⛔ **STRUCTURAL BOTTLENECK: IR Overflow**  \n"
                         f"• **Asset:** **{ir_p['Player']}** carries an active **{ir_p['Health_Status']}** designation but is burning a regular bench spot (`BN`).  \n"
                         f"• **Cause:** Dynamic league capacity is maxed at **{max_ir} IR slot(s)** (Occupied by: {', '.join(ir_occupied_players)}).  \n"
-                        f"• **Action Required:** Do not drop Mason for zero return. If Conner is cleared to play prior to Sunday, immediately activate Conner to unblock your IR slot and slide {ir_p['Player']} in, generating a free waiver add."
+                        f"• **Action Required:** Monitor active IR players. Unblock this slot as soon as a player clears protocol to generate a free waiver acquisition."
                     )
                 else:
                     st.info(
                         f"💡 **OPTIMIZATION: Open IR Slot Available**  \n"
                         f"• **Action:** Shift **{ir_p['Player']}** to your vacant IR slot immediately.  \n"
-                        f"• **Result:** Unlocks 1 free roster spot for speculative skill-position stash prior to kickoff."
+                        f"• **Result:** Unlocks 1 free roster spot for a speculative skill-position stash prior to kickoff."
                     )
 
-        # DIRECTIVE 2: STARTING LINEUP FRAGILITY & EXECUTABLE WAIVER TARGET
+        # --- LINEUP OPTIMIZATION (START/SIT) ---
+        benched_skill = bench[(bench["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])) & (bench["Alg_Proj"] > 0)]
+        starters_skill = starters[starters["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])]
+        
+        start_sit_moves = []
+        for _, bench_p in benched_skill.iterrows():
+            b_val = bench_p["Alg_Proj"]
+            
+            # Map bench positions to eligible starting slots
+            if bench_p["Real_Pos"] == "QB": valid_slots = ["QB", "S-FLEX"]
+            elif bench_p["Real_Pos"] == "RB": valid_slots = ["RB", "W/R/T", "W/R", "FLEX"]
+            elif bench_p["Real_Pos"] == "WR": valid_slots = ["WR", "W/R/T", "W/R", "FLEX"]
+            elif bench_p["Real_Pos"] == "TE": valid_slots = ["TE", "W/R/T", "FLEX"]
+            elif bench_p["Real_Pos"] == "K": valid_slots = ["K"]
+            elif bench_p["Real_Pos"] == "DEF": valid_slots = ["DEF"]
+            else: valid_slots = []
+            
+            eligible_starters = starters_skill[starters_skill["Fantasy_Slot"].isin(valid_slots)]
+            
+            if not eligible_starters.empty:
+                weakest_starter = eligible_starters.loc[eligible_starters["Alg_Proj"].idxmin()]
+                
+                # Flag if the bench player projects > 1.5 points higher than the current starter
+                if b_val > weakest_starter["Alg_Proj"] + 1.5:
+                    start_sit_moves.append({
+                        "Bench_Player": bench_p["Player"],
+                        "Bench_Val": b_val,
+                        "Starter_Player": weakest_starter["Player"],
+                        "Starter_Val": weakest_starter["Alg_Proj"],
+                        "Slot": weakest_starter["Fantasy_Slot"]
+                    })
+
+        if start_sit_moves:
+            directives_issued = True
+            # Sort by biggest point discrepancy
+            start_sit_moves = sorted(start_sit_moves, key=lambda x: x["Bench_Val"] - x["Starter_Val"], reverse=True)
+            seen_starters = set()
+            
+            for move in start_sit_moves:
+                if move["Starter_Player"] not in seen_starters:
+                    st.error(
+                        f"🚨 **SUBOPTIMAL DEPLOYMENT: Start/Sit Error Detected**  \n"
+                        f"• **Benched Asset:** **{move['Bench_Player']}** (Proj: {move['Bench_Val']} pts) is currently trapped on your bench.  \n"
+                        f"• **Active Vulnerability:** **{move['Starter_Player']}** (Proj: {move['Starter_Val']} pts) is currently starting in the **{move['Slot']}** slot.  \n"
+                        f"• **Directive:** Bench {move['Starter_Player']} and activate {move['Bench_Player']} immediately to recover **{round(move['Bench_Val'] - move['Starter_Val'], 1)}** projected points."
+                    )
+                    seen_starters.add(move["Starter_Player"])
+
+        # --- INJURY CONTINGENCY DIRECTIVES ---
         injured_starters = starters[starters["Health_Status"].isin(["Q", "D", "O"])]
         if not injured_starters.empty:
             directives_issued = True
@@ -623,42 +695,40 @@ if not live_roster_df.empty:
                 pos = s["Real_Pos"]
                 pos_bench = bench[bench["Real_Pos"] == pos]
                 
-                # Check for available waiver pool targets
                 pool = waiver_pool.get(pos, [])
                 waiver_recommendations = [f"**{p['Player']}** ({p['NFL_Team']})" for p in pool[:2]] if pool else ["Top Projected Waiver Option"]
 
                 if pos_bench.empty:
-                    # Critical exposure: starter is hurt and bench has zero backup
-                    cut_target = candidate_drops[0] if candidate_drops else {"Player": "Lowest-tier bench reserve", "Reason": "Free roster slot"}
-                    st.error(
+                    st.warning(
                         f"🚨 **ACTION REQUIRED: Critical {pos} Fragility**  \n"
                         f"• **Exposure:** Starter **{s['Player']} ({s['NFL_Team']})** is listed as **{s['Health_Status']}** with **0 backup {pos}s** rostered.  \n"
-                        f"• **Directive Drop:** Cut **{cut_target['Player']}** ({cut_target['Reason']}).  \n"
                         f"• **Directive Claim:** Add waiver target {', '.join(waiver_recommendations)} to prevent an automatic zero if scratched Sunday morning."
                     )
                 else:
                     healthy_backup = pos_bench[pos_bench["Health_Status"] == "Healthy"]
                     backup_name = healthy_backup.iloc[0]["Player"] if not healthy_backup.empty else pos_bench.iloc[0]["Player"]
-                    st.warning(
+                    st.info(
                         f"⚠️ **LINEUP ALERT: Pre-Game Contingency Swap**  \n"
                         f"• **Starter:** **{s['Player']} ({s['NFL_Team']})** is **{s['Health_Status']}**.  \n"
                         f"• **In-House Protocol:** Roster holds redundancy via **{backup_name}**. Prepare to swap into starting lineup if game-time scratch occurs."
                     )
 
-        # DIRECTIVE 3: NEGATIVE OPPORTUNITY COST PURGE
-        if candidate_drops:
-            for drop in candidate_drops:
-                if drop["Pos"] in ["K", "DEF"]:
-                    directives_issued = True
-                    st.warning(
-                        f"📉 **PURGE DIRECTIVE: Negative Opportunity Cost**  \n"
-                        f"• **Asset:** **{drop['Player']} ({drop['Pos']})** on bench.  \n"
-                        f"• **Diagnosis:** {drop['Reason']}  \n"
-                        f"• **Directive:** Drop immediately to stash speculative high-upside RB/WR handcuffs before weekly kickoff."
-                    )
+        # --- BENCH LIQUIDITY PURGE ---
+        kickers_on_bench = bench[bench["Real_Pos"] == "K"]
+        defs_on_bench = bench[bench["Real_Pos"] == "DEF"]
+        
+        if not kickers_on_bench.empty:
+            directives_issued = True
+            for _, k in kickers_on_bench.iterrows():
+                st.warning(f"📉 **PURGE DIRECTIVE:** Drop backup kicker **{k['Player']} ({k['NFL_Team']})**. Zero marginal variance; backup kickers hold negative opportunity cost.")
+                
+        if not defs_on_bench.empty:
+            directives_issued = True
+            for _, d in defs_on_bench.iterrows():
+                st.warning(f"📉 **PURGE DIRECTIVE:** Drop backup defense **{d['Player']} ({d['NFL_Team']})**. Defensive streaming assets are redundant roster holds.")
 
         if not directives_issued:
-            st.success("✅ **Zero-Sum Validation:** Roster is mathematically calibrated. Zero structural inefficiencies, unhedged starting liabilities, or dead capital detected.")
+            st.success("✅ **Zero-Sum Validation:** Roster is mathematically calibrated. Zero structural inefficiencies, unhedged starting liabilities, or Start/Sit errors detected.")
 
     st.markdown("<br><small>[Fantasy data provided by Yahoo Fantasy](https://football.fantasysports.yahoo.com/)</small>", unsafe_allow_html=True)
 else:
