@@ -98,35 +98,6 @@ def load_team_data():
 df_teams = load_team_data()
 team_dict = df_teams.set_index("abbr").to_dict("index")
 
-# =====================================================================
-# REAL-WORLD PPG ENGINE (Replaces flawed generic proxy)
-# =====================================================================
-def clean_player_name(name):
-    """Strips common suffixes to match Yahoo names with NFL data."""
-    if not isinstance(name, str):
-        return name
-    for suffix in [" Jr.", " Sr.", " III", " II"]:
-        name = name.replace(suffix, "")
-    return name.strip()
-
-@st.cache_data(ttl=3600)
-def load_real_ppg_baselines():
-    """Extracts actual real-world Fantasy PPG to drive prescriptive Start/Sit logic."""
-    try:
-        # Load current year data. Fallback to previous year if Week 1 hasn't occurred.
-        weekly_df = nfl.import_weekly_data([CURRENT_YEAR])
-        if weekly_df.empty:
-            weekly_df = nfl.import_weekly_data([CURRENT_YEAR - 1])
-            
-        weekly_df['clean_name'] = weekly_df['player_display_name'].apply(clean_player_name)
-        # Average Points Per Game (PPR scoring)
-        ppg_dict = weekly_df.groupby('clean_name')['fantasy_points_ppr'].mean().to_dict()
-        return ppg_dict
-    except Exception as e:
-        return {}
-
-real_ppg_data = load_real_ppg_baselines()
-
 @st.cache_data(ttl=3600)
 def load_team_news(team_abbr, year):
     results = {'injuries': [], 'news': []}
@@ -565,37 +536,6 @@ with col_sync:
         st.cache_data.clear()
         st.rerun()
 
-# ---------------------------------------------------------------------
-# REAL-WORLD PPG ENGINE (Replaces flawed generic proxy)
-# ---------------------------------------------------------------------
-def get_algorithmic_projection(player, nfl_team, pos, status, ppg_dict):
-    cleaned_player = clean_player_name(player)
-    
-    # Base fallback points for deep-bench or specialty positions
-    pos_base = {"QB": 14.0, "RB": 8.0, "WR": 8.0, "TE": 5.0, "K": 7.0, "DEF": 6.0}
-    
-    # 1. Fetch real-world baseline (Actual Points Per Game)
-    base_val = ppg_dict.get(cleaned_player, pos_base.get(pos, 6.0))
-    
-    # 2. Adjust for team offense quality (subtle modifier, not overriding)
-    try:
-        team_data = team_dict.get(nfl_team.upper(), {})
-        off_rank = float(team_data.get("Off", 16))
-    except Exception:
-        off_rank = 16.0
-        
-    team_modifier = (16 - off_rank) * 0.15 
-    
-    val = base_val + team_modifier
-    
-    # 3. Apply active injury/status penalties
-    if status in ["O", "IR", "D", "IR-R"]:
-        val = 0.0
-    elif status == "Q":
-        val *= 0.65
-        
-    return max(0.0, round(val, 1))
-
 live_roster_df, league_metadata = load_live_rosters_and_meta()
 
 if not live_roster_df.empty:
@@ -607,9 +547,6 @@ if not live_roster_df.empty:
     
     league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
     
-    # Inject algorithmic projections into the dataframe using the real data
-    league_roster["Alg_Proj"] = league_roster.apply(lambda r: get_algorithmic_projection(r["Player"], r["NFL_Team"], r["Real_Pos"], r["Health_Status"], real_ppg_data), axis=1)
-
     current_meta = league_metadata.get(selected_league, {})
     league_limits = current_meta.get("settings", {"IR": 1, "BN": 6})
     waiver_pool = current_meta.get("waivers", {})
@@ -619,7 +556,7 @@ if not live_roster_df.empty:
     with tab_starters:
         starters = league_roster[~league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
         st.dataframe(
-            starters[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Alg_Proj", "Health_Status"]],
+            starters[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Proj_Pts", "Health_Status"]],
             use_container_width=True,
             hide_index=True
         )
@@ -627,7 +564,7 @@ if not live_roster_df.empty:
     with tab_bench:
         bench = league_roster[league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
         st.dataframe(
-            bench[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Alg_Proj", "Health_Status"]],
+            bench[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Proj_Pts", "Health_Status"]],
             use_container_width=True,
             hide_index=True
         )
@@ -659,15 +596,14 @@ if not live_roster_df.empty:
                         f"• **Result:** Unlocks 1 free roster spot for a speculative skill-position stash prior to kickoff."
                     )
 
-        # --- LINEUP OPTIMIZATION (START/SIT) ---
-        benched_skill = bench[(bench["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])) & (bench["Alg_Proj"] > 0)]
+        # --- LINEUP OPTIMIZATION (START/SIT) USING REAL PROJECTIONS ---
+        benched_skill = bench[(bench["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])) & (bench["Proj_Pts"] > 0)]
         starters_skill = starters[starters["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])]
         
         start_sit_moves = []
         for _, bench_p in benched_skill.iterrows():
-            b_val = bench_p["Alg_Proj"]
+            b_val = bench_p["Proj_Pts"]
             
-            # Map bench positions to eligible starting slots
             if bench_p["Real_Pos"] == "QB": valid_slots = ["QB", "S-FLEX"]
             elif bench_p["Real_Pos"] == "RB": valid_slots = ["RB", "W/R/T", "W/R", "FLEX"]
             elif bench_p["Real_Pos"] == "WR": valid_slots = ["WR", "W/R/T", "W/R", "FLEX"]
@@ -679,21 +615,20 @@ if not live_roster_df.empty:
             eligible_starters = starters_skill[starters_skill["Fantasy_Slot"].isin(valid_slots)]
             
             if not eligible_starters.empty:
-                weakest_starter = eligible_starters.loc[eligible_starters["Alg_Proj"].idxmin()]
+                weakest_starter = eligible_starters.loc[eligible_starters["Proj_Pts"].idxmin()]
                 
-                # Flag if the bench player projects > 1.5 points higher than the current starter
-                if b_val > weakest_starter["Alg_Proj"] + 1.5:
+                # Flag if the bench player projects > 1.0 points higher than the current starter
+                if b_val > weakest_starter["Proj_Pts"] + 1.0:
                     start_sit_moves.append({
                         "Bench_Player": bench_p["Player"],
                         "Bench_Val": b_val,
                         "Starter_Player": weakest_starter["Player"],
-                        "Starter_Val": weakest_starter["Alg_Proj"],
+                        "Starter_Val": weakest_starter["Proj_Pts"],
                         "Slot": weakest_starter["Fantasy_Slot"]
                     })
 
         if start_sit_moves:
             directives_issued = True
-            # Sort by biggest point discrepancy
             start_sit_moves = sorted(start_sit_moves, key=lambda x: x["Bench_Val"] - x["Starter_Val"], reverse=True)
             seen_starters = set()
             
