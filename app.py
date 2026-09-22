@@ -98,6 +98,35 @@ def load_team_data():
 df_teams = load_team_data()
 team_dict = df_teams.set_index("abbr").to_dict("index")
 
+# =====================================================================
+# REAL-WORLD PPG ENGINE (Replaces flawed generic proxy)
+# =====================================================================
+def clean_player_name(name):
+    """Strips common suffixes to match Yahoo names with NFL data."""
+    if not isinstance(name, str):
+        return name
+    for suffix in [" Jr.", " Sr.", " III", " II"]:
+        name = name.replace(suffix, "")
+    return name.strip()
+
+@st.cache_data(ttl=3600)
+def load_real_ppg_baselines():
+    """Extracts actual real-world Fantasy PPG to drive prescriptive Start/Sit logic."""
+    try:
+        # Load current year data. Fallback to previous year if Week 1 hasn't occurred.
+        weekly_df = nfl.import_weekly_data([CURRENT_YEAR])
+        if weekly_df.empty:
+            weekly_df = nfl.import_weekly_data([CURRENT_YEAR - 1])
+            
+        weekly_df['clean_name'] = weekly_df['player_display_name'].apply(clean_player_name)
+        # Average Points Per Game (PPR scoring)
+        ppg_dict = weekly_df.groupby('clean_name')['fantasy_points_ppr'].mean().to_dict()
+        return ppg_dict
+    except Exception as e:
+        return {}
+
+real_ppg_data = load_real_ppg_baselines()
+
 @st.cache_data(ttl=3600)
 def load_team_news(team_abbr, year):
     results = {'injuries': [], 'news': []}
@@ -537,38 +566,29 @@ with col_sync:
         st.rerun()
 
 # ---------------------------------------------------------------------
-# ALGORITHMIC PROJECTION ENGINE
-# Evaluates start/sit logic mathematically based on team offense metrics
+# REAL-WORLD PPG ENGINE (Replaces flawed generic proxy)
 # ---------------------------------------------------------------------
-def get_algorithmic_projection(player, nfl_team, pos, status):
-    pos_base = {"QB": 17.0, "RB": 11.0, "WR": 11.0, "TE": 8.0, "K": 8.0, "DEF": 7.0}
-    base = pos_base.get(pos, 9.0)
+def get_algorithmic_projection(player, nfl_team, pos, status, ppg_dict):
+    cleaned_player = clean_player_name(player)
     
+    # Base fallback points for deep-bench or specialty positions
+    pos_base = {"QB": 14.0, "RB": 8.0, "WR": 8.0, "TE": 5.0, "K": 7.0, "DEF": 6.0}
+    
+    # 1. Fetch real-world baseline (Actual Points Per Game)
+    base_val = ppg_dict.get(cleaned_player, pos_base.get(pos, 6.0))
+    
+    # 2. Adjust for team offense quality (subtle modifier, not overriding)
     try:
         team_data = team_dict.get(nfl_team.upper(), {})
         off_rank = float(team_data.get("Off", 16))
     except Exception:
         off_rank = 16.0
         
-    team_modifier = (16 - off_rank) * 0.35 
+    team_modifier = (16 - off_rank) * 0.15 
     
-    elite_players = {
-        "Christian McCaffrey": 9.0, "Garrett Wilson": 6.5, "George Pickens": 5.0, 
-        "Brock Purdy": 5.0, "Derrick Henry": 6.0, "Deebo Samuel Sr.": 4.0, 
-        "Joe Burrow": 5.0, "Amon-Ra St. Brown": 7.0, "Tee Higgins": 4.0,
-        "DeVonta Smith": 5.0, "James Cook III": 4.0, "Travis Etienne Jr.": 3.0,
-        "Jordan Love": 4.0, "CeeDee Lamb": 8.0, "Justin Jefferson": 8.0, "Breece Hall": 7.0
-    }
+    val = base_val + team_modifier
     
-    fringe_players = {
-        "Tyjae Spears": -3.0, "Josh Downs": -2.0, "Jordan Mason": -2.0, "Harrison Mevis": -2.0
-    }
-    
-    team_modifier += elite_players.get(player, 0.0)
-    team_modifier += fringe_players.get(player, 0.0)
-    
-    val = base + team_modifier
-    
+    # 3. Apply active injury/status penalties
     if status in ["O", "IR", "D", "IR-R"]:
         val = 0.0
     elif status == "Q":
@@ -587,8 +607,8 @@ if not live_roster_df.empty:
     
     league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
     
-    # Inject algorithmic projections into the dataframe
-    league_roster["Alg_Proj"] = league_roster.apply(lambda r: get_algorithmic_projection(r["Player"], r["NFL_Team"], r["Real_Pos"], r["Health_Status"]), axis=1)
+    # Inject algorithmic projections into the dataframe using the real data
+    league_roster["Alg_Proj"] = league_roster.apply(lambda r: get_algorithmic_projection(r["Player"], r["NFL_Team"], r["Real_Pos"], r["Health_Status"], real_ppg_data), axis=1)
 
     current_meta = league_metadata.get(selected_league, {})
     league_limits = current_meta.get("settings", {"IR": 1, "BN": 6})
