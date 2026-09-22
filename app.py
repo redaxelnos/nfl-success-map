@@ -10,6 +10,13 @@ import streamlit as st
 from streamlit_folium import st_folium
 from fantasy_pipeline import fetch_complete_fantasy_state
 
+CURRENT_YEAR = datetime.datetime.now().year
+
+st.set_page_config(
+    page_title=f"NFL Matchup, Travel & Intelligence Hub ({CURRENT_YEAR})", 
+    layout="wide"
+)
+
 # =====================================================================
 # SECURE CLOUD AUTHENTICATION REBUILD
 # =====================================================================
@@ -20,13 +27,6 @@ if not os.path.exists("oauth2.json"):
     elif "YAHOO_KEYS" in st.secrets:
         with open("oauth2.json", "w") as f:
             f.write(st.secrets["YAHOO_KEYS"])
-
-CURRENT_YEAR = datetime.datetime.now().year
-
-st.set_page_config(
-    page_title=f"NFL Matchup, Travel & Intelligence Hub ({CURRENT_YEAR})", 
-    layout="wide"
-)
 
 st.title(f"Official NFL Schedule, Distance Travel & Intelligence Hub ({CURRENT_YEAR})")
 st.markdown(
@@ -536,6 +536,48 @@ with col_sync:
         st.cache_data.clear()
         st.rerun()
 
+# ---------------------------------------------------------------------
+# REAL-WORLD PPG ENGINE (Replaces flawed generic proxy)
+# ---------------------------------------------------------------------
+def clean_player_name(name):
+    """Strips common suffixes to match Yahoo names with NFL data."""
+    if not isinstance(name, str): return name
+    for suffix in [" Sr.", " Jr.", " III", " II"]:
+        name = name.replace(suffix, "")
+    return name.strip()
+
+@st.cache_data(ttl=3600)
+def load_real_ppg_baselines():
+    """Extracts actual real-world Fantasy PPG to drive prescriptive Start/Sit logic."""
+    try:
+        weekly_df = nfl.import_weekly_data([CURRENT_YEAR])
+        if weekly_df.empty:
+            weekly_df = nfl.import_weekly_data([CURRENT_YEAR - 1])
+            
+        weekly_df['clean_name'] = weekly_df['player_display_name'].apply(clean_player_name)
+        # Average Points Per Game (PPR scoring)
+        ppg_dict = weekly_df.groupby('clean_name')['fantasy_points_ppr'].mean().to_dict()
+        return ppg_dict
+    except Exception:
+        return {}
+
+real_ppg_data = load_real_ppg_baselines()
+
+def get_algorithmic_projection(player, pos, status, ppg_dict):
+    cleaned_player = clean_player_name(player)
+    pos_base = {"QB": 14.0, "RB": 8.0, "WR": 8.0, "TE": 5.0, "K": 7.0, "DEF": 6.0}
+    
+    # Fetch real-world baseline (Actual Points Per Game)
+    val = ppg_dict.get(cleaned_player, pos_base.get(pos, 6.0))
+    
+    # Apply active injury/status penalties
+    if status in ["O", "IR", "D", "IR-R"]:
+        val = 0.0
+    elif status == "Q":
+        val *= 0.65
+        
+    return max(0.0, round(val, 1))
+
 live_roster_df, league_metadata = load_live_rosters_and_meta()
 
 if not live_roster_df.empty:
@@ -547,6 +589,9 @@ if not live_roster_df.empty:
     
     league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
     
+    # Inject algorithm projections generated from live NFL Data
+    league_roster["Proj_Pts"] = league_roster.apply(lambda r: get_algorithmic_projection(r["Player"], r["Real_Pos"], r["Health_Status"], real_ppg_data), axis=1)
+
     current_meta = league_metadata.get(selected_league, {})
     league_limits = current_meta.get("settings", {"IR": 1, "BN": 6})
     waiver_pool = current_meta.get("waivers", {})
