@@ -304,7 +304,7 @@ df_teams["adjusted_playoff"] = df_teams.apply(lambda row: calculate_adjusted_pla
 current_adjusted_score = df_teams.loc[df_teams["abbr"] == selected_abbr, "adjusted_playoff"].values[0]
 st.sidebar.markdown(f"### 🎯 Adjusted Playoff Odds: {current_adjusted_score}%")
 
-selected_week = 1
+selected_week = 3  # Updated statically or via user input loop for live week
 win_prob = 50.0
 is_home = True
 opp_name = "Opponent"
@@ -314,7 +314,7 @@ with st.sidebar.expander("🏈 Official Schedule & Travel Distance", expanded=Tr
         team_games = official_schedule[(official_schedule["home_team"] == selected_abbr) | (official_schedule["away_team"] == selected_abbr)]
         weeks = sorted(team_games["week"].unique().tolist())
         if weeks:
-            selected_week = st.selectbox("Select Week", weeks)
+            selected_week = st.selectbox("Select Week", weeks, index=weeks.index(3) if 3 in weeks else 0)
             game = team_games[team_games["week"] == selected_week].iloc[0]
             
             home_abbr = game["home_team"]
@@ -537,64 +537,87 @@ with col_sync:
         st.rerun()
 
 # ---------------------------------------------------------------------
-# REAL-WORLD PPG ENGINE (Corrected to bypass Yahoo API blocks)
+# FORWARD-LOOKING MATCHUP ENGINE & TIME-LOCK PROTOCOL
 # ---------------------------------------------------------------------
 def clean_player_name(name):
-    """Strips common suffixes to match Yahoo names with NFL data."""
     if not isinstance(name, str): return name
     for suffix in [" Sr.", " Jr.", " III", " II"]:
         name = name.replace(suffix, "")
     return name.strip()
 
+@st.cache_data(ttl=60)
+def get_locked_nfl_teams(year, week):
+    """Pings ESPN live scoreboard to flag teams whose games have already started/finished."""
+    locked = set()
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={year}&seasontype=2&week={week}"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        for event in data.get('events', []):
+            state = event['status']['type']['state']
+            if state in ['in', 'post']:
+                for comp in event['competitions'][0]['competitors']:
+                    team_abbr = comp['team']['abbreviation'].upper()
+                    locked.add(team_abbr)
+                    # Normalize common variations
+                    if team_abbr == 'WSH': locked.add('WAS')
+                    elif team_abbr == 'LAR': locked.add('LA')
+                    elif team_abbr == 'LV': locked.add('OAK')
+    except Exception:
+        pass
+    return locked
+
 @st.cache_data(ttl=3600)
 def load_real_ppg_baselines():
-    """Extracts actual real-world Fantasy PPG to drive prescriptive Start/Sit logic."""
+    """Extracts actual real-world Fantasy PPG."""
     try:
-        # Loop back through recent years in case the current season data hasn't fully populated
-        for year in [CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2]:
+        for year in [CURRENT_YEAR, CURRENT_YEAR - 1]:
             try:
                 weekly_df = nfl.import_weekly_data([year])
                 if not weekly_df.empty:
                     weekly_df['clean_name'] = weekly_df['player_display_name'].apply(clean_player_name)
-                    # Filter out 1-game wonders so data isn't skewed
                     counts = weekly_df.groupby('clean_name').size()
                     valid = counts[counts >= 3].index
                     filtered = weekly_df[weekly_df['clean_name'].isin(valid)]
                     ppg_dict = filtered.groupby('clean_name')['fantasy_points_ppr'].mean().to_dict()
-                    if ppg_dict:
-                        return ppg_dict
-            except Exception:
-                continue
+                    if ppg_dict: return ppg_dict
+            except Exception: continue
         return {}
-    except Exception:
-        return {}
+    except Exception: return {}
 
-real_ppg_data = load_real_ppg_baselines()
+def get_opponent_def_rank(team_abbr, week, sched_df, team_data_dict):
+    """Determines how elite the opposing defense is this specific week."""
+    try:
+        game = sched_df[((sched_df['home_team'] == team_abbr) | (sched_df['away_team'] == team_abbr)) & (sched_df['week'] == week)]
+        if game.empty: return 16
+        row = game.iloc[0]
+        opp = row['away_team'] if row['home_team'] == team_abbr else row['home_team']
+        return float(team_data_dict.get(opp, {}).get("Def", 16))
+    except Exception: return 16.0
 
-def get_algorithmic_projection(player, pos, status, ppg_dict):
+def get_algorithmic_projection(player, nfl_team, pos, status, ppg_dict, week, sched_df, team_data_dict):
     cleaned_player = clean_player_name(player)
     
-    # 1. Fetch real-world baseline (Actual Points Per Game)
     if cleaned_player in ppg_dict:
         val = ppg_dict[cleaned_player]
     else:
-        # Fallbacks for deep-bench or if nfl_data_py fails
         pos_base = {"QB": 14.0, "RB": 7.0, "WR": 7.0, "TE": 5.0, "K": 7.0, "DEF": 6.0}
         val = pos_base.get(pos, 6.0)
-        
-        # Hardcoded elite safety net so stars don't default to backup numbers
         elites = ["Joe Burrow", "Christian McCaffrey", "Breece Hall", "Derrick Henry", "Amon-Ra St. Brown", "CeeDee Lamb", "Justin Jefferson", "Aaron Jones", "DeVonta Smith", "Tee Higgins", "Trevor Lawrence", "Garrett Wilson"]
-        if cleaned_player in elites:
-            val += 7.0
+        if cleaned_player in elites: val += 7.0
             
-    # 2. THE FIX: Apply active injury/status penalties
-    # We NO LONGER penalize the "Q" tag. Questionable players usually start.
-    # Slashing their points by 35% is what caused Gainwell to jump Aaron Jones.
+    # Forward-Looking Matchup Variance
+    opp_def_rank = get_opponent_def_rank(nfl_team.upper(), week, sched_df, team_data_dict)
+    matchup_shift = (opp_def_rank - 16) * 0.15 
+    val += matchup_shift
+
+    # Zero out strictly inactive tags. We no longer slash the "Q" tag.
     if status in ["O", "IR", "D", "IR-R", "PUP", "SUSP"]:
         val = 0.0
         
     return max(0.0, round(val, 1))
 
+real_ppg_data = load_real_ppg_baselines()
 live_roster_df, league_metadata = load_live_rosters_and_meta()
 
 if not live_roster_df.empty:
@@ -606,8 +629,14 @@ if not live_roster_df.empty:
     
     league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
     
-    # Inject algorithm projections generated from live NFL Data
-    league_roster["Proj_Pts"] = league_roster.apply(lambda r: get_algorithmic_projection(r["Player"], r["Real_Pos"], r["Health_Status"], real_ppg_data), axis=1)
+    # 1. Fetch live lock statuses to protect Thursday/Played players
+    locked_nfl_teams = get_locked_nfl_teams(CURRENT_YEAR, selected_week)
+    
+    # 2. Inject Matchup-adjusted algorithm projections
+    league_roster["Matchup_Proj"] = league_roster.apply(lambda r: get_algorithmic_projection(
+        r["Player"], r["NFL_Team"], r["Real_Pos"], r["Health_Status"], 
+        real_ppg_data, selected_week, official_schedule, team_dict
+    ), axis=1)
 
     current_meta = league_metadata.get(selected_league, {})
     league_limits = current_meta.get("settings", {"IR": 1, "BN": 6})
@@ -618,17 +647,15 @@ if not live_roster_df.empty:
     with tab_starters:
         starters = league_roster[~league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
         st.dataframe(
-            starters[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Proj_Pts", "Health_Status"]],
-            use_container_width=True,
-            hide_index=True
+            starters[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Matchup_Proj", "Health_Status"]],
+            use_container_width=True, hide_index=True
         )
 
     with tab_bench:
         bench = league_roster[league_roster["Fantasy_Slot"].isin(["BN", "IR"])]
         st.dataframe(
-            bench[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Proj_Pts", "Health_Status"]],
-            use_container_width=True,
-            hide_index=True
+            bench[["Fantasy_Slot", "Player", "Real_Pos", "NFL_Team", "Matchup_Proj", "Health_Status"]],
+            use_container_width=True, hide_index=True
         )
 
     with tab_manager_audit:
@@ -658,13 +685,17 @@ if not live_roster_df.empty:
                         f"• **Result:** Unlocks 1 free roster spot for a speculative skill-position stash prior to kickoff."
                     )
 
-        # --- LINEUP OPTIMIZATION (START/SIT) USING REAL PROJECTIONS ---
-        benched_skill = bench[(bench["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])) & (bench["Proj_Pts"] > 0)]
+        # --- LINEUP OPTIMIZATION (START/SIT) WITH TIME-LOCK ENFORCEMENT ---
+        benched_skill = bench[(bench["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])) & (bench["Matchup_Proj"] > 0)]
         starters_skill = starters[starters["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])]
         
         start_sit_moves = []
         for _, bench_p in benched_skill.iterrows():
-            b_val = bench_p["Proj_Pts"]
+            # If the bench player has already played/locked, ignore them entirely
+            if bench_p["NFL_Team"] in locked_nfl_teams:
+                continue
+                
+            b_val = bench_p["Matchup_Proj"]
             
             if bench_p["Real_Pos"] == "QB": valid_slots = ["QB", "S-FLEX"]
             elif bench_p["Real_Pos"] == "RB": valid_slots = ["RB", "W/R/T", "W/R", "FLEX"]
@@ -674,18 +705,21 @@ if not live_roster_df.empty:
             elif bench_p["Real_Pos"] == "DEF": valid_slots = ["DEF"]
             else: valid_slots = []
             
-            eligible_starters = starters_skill[starters_skill["Fantasy_Slot"].isin(valid_slots)]
+            # Evaluate against active starters whose games have NOT started yet
+            eligible_starters = starters_skill[
+                (starters_skill["Fantasy_Slot"].isin(valid_slots)) & 
+                (~starters_skill["NFL_Team"].isin(locked_nfl_teams))
+            ]
             
             if not eligible_starters.empty:
-                weakest_starter = eligible_starters.loc[eligible_starters["Proj_Pts"].idxmin()]
+                weakest_starter = eligible_starters.loc[eligible_starters["Matchup_Proj"].idxmin()]
                 
-                # Flag if the bench player projects > 1.5 points higher than the current starter
-                if b_val > weakest_starter["Proj_Pts"] + 1.5:
+                if b_val > weakest_starter["Matchup_Proj"] + 1.5:
                     start_sit_moves.append({
                         "Bench_Player": bench_p["Player"],
                         "Bench_Val": b_val,
                         "Starter_Player": weakest_starter["Player"],
-                        "Starter_Val": weakest_starter["Proj_Pts"],
+                        "Starter_Val": weakest_starter["Matchup_Proj"],
                         "Slot": weakest_starter["Fantasy_Slot"]
                     })
 
@@ -697,10 +731,10 @@ if not live_roster_df.empty:
             for move in start_sit_moves:
                 if move["Starter_Player"] not in seen_starters:
                     st.error(
-                        f"🚨 **SUBOPTIMAL DEPLOYMENT: Start/Sit Error Detected**  \n"
-                        f"• **Benched Asset:** **{move['Bench_Player']}** (Proj: {move['Bench_Val']} pts) is currently trapped on your bench.  \n"
-                        f"• **Active Vulnerability:** **{move['Starter_Player']}** (Proj: {move['Starter_Val']} pts) is currently starting in the **{move['Slot']}** slot.  \n"
-                        f"• **Directive:** Bench {move['Starter_Player']} and activate {move['Bench_Player']} immediately to recover **{round(move['Bench_Val'] - move['Starter_Val'], 1)}** projected points."
+                        f"🚨 **SUBOPTIMAL DEPLOYMENT: Matchup/Sit Error Detected**  \n"
+                        f"• **Benched Asset:** **{move['Bench_Player']}** (Matchup Proj: {move['Bench_Val']} pts) is trapped on your bench.  \n"
+                        f"• **Active Vulnerability:** **{move['Starter_Player']}** (Matchup Proj: {move['Starter_Val']} pts) is currently starting in the **{move['Slot']}** slot.  \n"
+                        f"• **Directive:** Based on defensive matchup variances, bench {move['Starter_Player']} and activate {move['Bench_Player']} immediately to recover **{round(move['Bench_Val'] - move['Starter_Val'], 1)}** projected points."
                     )
                     seen_starters.add(move["Starter_Player"])
 
@@ -709,6 +743,9 @@ if not live_roster_df.empty:
         if not injured_starters.empty:
             directives_issued = True
             for _, s in injured_starters.iterrows():
+                # Skip locked players (their status won't matter anymore)
+                if s["NFL_Team"] in locked_nfl_teams: continue
+                
                 pos = s["Real_Pos"]
                 pos_bench = bench[bench["Real_Pos"] == pos]
                 
@@ -750,120 +787,3 @@ if not live_roster_df.empty:
     st.markdown("<br><small>[Fantasy data provided by Yahoo Fantasy](https://football.fantasysports.yahoo.com/)</small>", unsafe_allow_html=True)
 else:
     st.info("Live Yahoo Fantasy Data currently unavailable. Ensure `oauth2.json` or Streamlit Secrets are active.")
-
-# -------------------------------------------------------------------------
-# 9. TRUE MODEL AUDIT: EXPECTATION VS. REALITY & LEAGUE OVERVIEW
-# -------------------------------------------------------------------------
-st.markdown("---")
-st.subheader(f"🎯 Model Calibration & Accuracy Audit")
-
-ml_file = "weekly_predictions.csv"
-audit_done = False
-
-if os.path.exists(ml_file) and not official_schedule.empty:
-    try:
-        audit_raw = pd.read_csv(ml_file)
-        audit_raw['home_team'] = audit_raw['home_team'].replace(NFL_ABBR_MAP)
-        audit_raw['away_team'] = audit_raw['away_team'].replace(NFL_ABBR_MAP)
-        
-        tab_team, tab_league, tab_brain = st.tabs([f"🔎 {st.session_state.selected_team} Audit", "🌎 League-Wide Macro Audit", "🧠 Inside the Algorithm (Live Weights)"])
-        
-        # --- TAB 1: TEAM SPECIFIC AUDIT ---
-        with tab_team:
-            t_games = audit_raw[
-                ((audit_raw['home_team'] == selected_abbr) | (audit_raw['away_team'] == selected_abbr)) &
-                (audit_raw['result'].notna()) & (audit_raw['season'] == CURRENT_YEAR)
-            ].sort_values('week')
-            
-            if not t_games.empty:
-                audit_records = []
-                model_errors = []
-                directional_wins = []
-                
-                for _, r in t_games.iterrows():
-                    is_h = r['home_team'] == selected_abbr
-                    actual_margin = float(r['result'] if is_h else -r['result'])
-                    model_proj = float(r['model_margin'] if is_h else -r['model_margin'])
-                    
-                    m_err = abs(actual_margin - model_proj)
-                    model_errors.append(m_err)
-                    
-                    if (actual_margin > 0 and model_proj > 0) or (actual_margin < 0 and model_proj < 0) or (actual_margin == 0 and round(model_proj) == 0): directional_wins.append(1)
-                    else: directional_wins.append(0)
-                        
-                    match_sched = official_schedule[official_schedule['game_id'] == r['game_id']]
-                    vegas_proj = None
-                    if not match_sched.empty:
-                        raw_spread = match_sched.iloc[0]['spread_line']
-                        if pd.notna(raw_spread): vegas_proj = float(raw_spread if is_h else -raw_spread)
-                    
-                    audit_records.append({
-                        "Week": f"Wk {int(r['week'])}",
-                        "Model Expectation": round(model_proj, 1),
-                        "Actual Outcome": round(actual_margin, 1),
-                        "Vegas Line (Reference)": round(vegas_proj, 1) if vegas_proj is not None else "N/A"
-                    })
-                    
-                audit_df = pd.DataFrame(audit_records).set_index("Week")
-                mean_model_err = sum(model_errors) / len(model_errors) if model_errors else 0
-                win_rate = (sum(directional_wins) / len(directional_wins)) * 100 if directional_wins else 0
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Games Audited", f"{len(model_errors)} Game(s)")
-                c2.metric("Mean Point Error", f"±{mean_model_err:.1f} pts", help="Average difference between your model's projected margin and actual reality.")
-                c3.metric("Straight-Up Win/Loss Accuracy", f"{win_rate:.0f}%", help="Percentage of games where the model picked the correct outright winner.")
-                    
-                st.markdown("**Model Expectation vs. Actual Reality**")
-                st.bar_chart(audit_df[["Model Expectation", "Actual Outcome"]], color=["#1f77b4", "#2ca02c"], stack=False)
-                st.caption("This chart visually pairs **what your model expected to happen** (Blue) alongside **what actually happened on the field** (Green). A highly accurate prediction means the two bars are nearly identical in height and direction.")
-                st.markdown("**Raw Margin Ledger**")
-                st.dataframe(audit_df, use_container_width=True)
-                audit_done = True
-            else:
-                st.info(f"Model audit data for the {st.session_state.selected_team} will populate here once completed game results are processed by the pipeline.")
-
-        # --- TAB 2: LEAGUE-WIDE MACRO AUDIT ---
-        with tab_league:
-            macro_games = audit_raw[audit_raw['result'].notna() & (audit_raw['season'] == CURRENT_YEAR)].copy()
-            if not macro_games.empty:
-                macro_games['abs_err'] = abs(macro_games['result'] - macro_games['model_margin'])
-                def check_win(row):
-                    if (row['result'] > 0 and row['model_margin'] > 0) or (row['result'] < 0 and row['model_margin'] < 0) or (row['result'] == 0 and round(row['model_margin']) == 0): return 1
-                    return 0
-                macro_games['correct'] = macro_games.apply(check_win, axis=1)
-                
-                overall_mae = macro_games['abs_err'].mean()
-                overall_win = macro_games['correct'].mean() * 100.0
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("League Games Audited", f"{len(macro_games)} Game(s)")
-                c2.metric("League-Wide Mean Error", f"±{overall_mae:.1f} pts")
-                c3.metric("League-Wide Win/Loss Accuracy", f"{overall_win:.1f}%")
-                
-                st.markdown("---")
-                colA, colB = st.columns(2)
-                macro_games['Matchup'] = macro_games['away_team'] + " @ " + macro_games['home_team'] + " (Wk " + macro_games['week'].astype(int).astype(str) + ")"
-                
-                with colA:
-                    st.success("**🎯 Top 3 Best Predictions (Closest Hits)**")
-                    best = macro_games.nsmallest(3, 'abs_err')
-                    for _, row in best.iterrows(): st.markdown(f"- **{row['Matchup']}**: Off by just **{row['abs_err']:.1f} pts**")
-                with colB:
-                    st.error("**⚠️ Top 3 Worst Whiffs (Biggest Misses)**")
-                    worst = macro_games.nlargest(3, 'abs_err')
-                    for _, row in worst.iterrows(): st.markdown(f"- **{row['Matchup']}**: Off by **{row['abs_err']:.1f} pts**")
-            else:
-                st.info("League-wide metrics will populate here once completed game results are processed.")
-                
-        # --- TAB 3: INSIDE THE ALGORITHM (LIVE BRAIN WEIGHTS) ---
-        with tab_brain:
-            st.markdown("**What is the Machine Learning model currently prioritizing?**")
-            st.caption("Every week, the algorithm retrains itself on the newest data. This chart extracts the actual mathematical weights (coefficients) from the AI's Ridge regression brain. As the season progresses, you will literally watch it dynamically shift priority between these variables based on what is actually winning football games.")
-            
-            if os.path.exists("feature_weights.csv"):
-                weights_df = pd.read_csv("feature_weights.csv").set_index("Feature")
-                st.bar_chart(weights_df, color="#9467bd")
-            else:
-                st.info("Live feature weights will be extracted and displayed after your next automated pipeline run.")
-
-    except Exception: pass
