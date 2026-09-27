@@ -787,3 +787,119 @@ if not live_roster_df.empty:
     st.markdown("<br><small>[Fantasy data provided by Yahoo Fantasy](https://football.fantasysports.yahoo.com/)</small>", unsafe_allow_html=True)
 else:
     st.info("Live Yahoo Fantasy Data currently unavailable. Ensure `oauth2.json` or Streamlit Secrets are active.")
+# -------------------------------------------------------------------------
+# 9. TRUE MODEL AUDIT: EXPECTATION VS. REALITY & LEAGUE OVERVIEW
+# -------------------------------------------------------------------------
+st.markdown("---")
+st.subheader(f"🎯 Model Calibration & Accuracy Audit")
+
+ml_file = "weekly_predictions.csv"
+audit_done = False
+
+if os.path.exists(ml_file) and not official_schedule.empty:
+    try:
+        audit_raw = pd.read_csv(ml_file)
+        audit_raw['home_team'] = audit_raw['home_team'].replace(NFL_ABBR_MAP)
+        audit_raw['away_team'] = audit_raw['away_team'].replace(NFL_ABBR_MAP)
+        
+        tab_team, tab_league, tab_brain = st.tabs([f"🔎 {st.session_state.selected_team} Audit", "🌎 League-Wide Macro Audit", "🧠 Inside the Algorithm (Live Weights)"])
+        
+        # --- TAB 1: TEAM SPECIFIC AUDIT ---
+        with tab_team:
+            t_games = audit_raw[
+                ((audit_raw['home_team'] == selected_abbr) | (audit_raw['away_team'] == selected_abbr)) &
+                (audit_raw['result'].notna()) & (audit_raw['season'] == CURRENT_YEAR)
+            ].sort_values('week')
+            
+            if not t_games.empty:
+                audit_records = []
+                model_errors = []
+                directional_wins = []
+                
+                for _, r in t_games.iterrows():
+                    is_h = r['home_team'] == selected_abbr
+                    actual_margin = float(r['result'] if is_h else -r['result'])
+                    model_proj = float(r['model_margin'] if is_h else -r['model_margin'])
+                    
+                    m_err = abs(actual_margin - model_proj)
+                    model_errors.append(m_err)
+                    
+                    if (actual_margin > 0 and model_proj > 0) or (actual_margin < 0 and model_proj < 0) or (actual_margin == 0 and round(model_proj) == 0): directional_wins.append(1)
+                    else: directional_wins.append(0)
+                        
+                    match_sched = official_schedule[official_schedule['game_id'] == r['game_id']]
+                    vegas_proj = None
+                    if not match_sched.empty:
+                        raw_spread = match_sched.iloc[0]['spread_line']
+                        if pd.notna(raw_spread): vegas_proj = float(raw_spread if is_h else -raw_spread)
+                    
+                    audit_records.append({
+                        "Week": f"Wk {int(r['week'])}",
+                        "Model Expectation": round(model_proj, 1),
+                        "Actual Outcome": round(actual_margin, 1),
+                        "Vegas Line (Reference)": round(vegas_proj, 1) if vegas_proj is not None else "N/A"
+                    })
+                    
+                audit_df = pd.DataFrame(audit_records).set_index("Week")
+                mean_model_err = sum(model_errors) / len(model_errors) if model_errors else 0
+                win_rate = (sum(directional_wins) / len(directional_wins)) * 100 if directional_wins else 0
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Games Audited", f"{len(model_errors)} Game(s)")
+                c2.metric("Mean Point Error", f"±{mean_model_err:.1f} pts", help="Average difference between your model's projected margin and actual reality.")
+                c3.metric("Straight-Up Win/Loss Accuracy", f"{win_rate:.0f}%", help="Percentage of games where the model picked the correct outright winner.")
+                    
+                st.markdown("**Model Expectation vs. Actual Reality**")
+                st.bar_chart(audit_df[["Model Expectation", "Actual Outcome"]], color=["#1f77b4", "#2ca02c"], stack=False)
+                st.caption("This chart visually pairs **what your model expected to happen** (Blue) alongside **what actually happened on the field** (Green). A highly accurate prediction means the two bars are nearly identical in height and direction.")
+                st.markdown("**Raw Margin Ledger**")
+                st.dataframe(audit_df, use_container_width=True)
+                audit_done = True
+            else:
+                st.info(f"Model audit data for the {st.session_state.selected_team} will populate here once completed game results are processed by the pipeline.")
+
+        # --- TAB 2: LEAGUE-WIDE MACRO AUDIT ---
+        with tab_league:
+            macro_games = audit_raw[audit_raw['result'].notna() & (audit_raw['season'] == CURRENT_YEAR)].copy()
+            if not macro_games.empty:
+                macro_games['abs_err'] = abs(macro_games['result'] - macro_games['model_margin'])
+                def check_win(row):
+                    if (row['result'] > 0 and row['model_margin'] > 0) or (row['result'] < 0 and row['model_margin'] < 0) or (row['result'] == 0 and round(row['model_margin']) == 0): return 1
+                    return 0
+                macro_games['correct'] = macro_games.apply(check_win, axis=1)
+                
+                overall_mae = macro_games['abs_err'].mean()
+                overall_win = macro_games['correct'].mean() * 100.0
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("League Games Audited", f"{len(macro_games)} Game(s)")
+                c2.metric("League-Wide Mean Error", f"±{overall_mae:.1f} pts")
+                c3.metric("League-Wide Win/Loss Accuracy", f"{overall_win:.1f}%")
+                
+                st.markdown("---")
+                colA, colB = st.columns(2)
+                macro_games['Matchup'] = macro_games['away_team'] + " @ " + macro_games['home_team'] + " (Wk " + macro_games['week'].astype(int).astype(str) + ")"
+                
+                with colA:
+                    st.success("**🎯 Top 3 Best Predictions (Closest Hits)**")
+                    best = macro_games.nsmallest(3, 'abs_err')
+                    for _, row in best.iterrows(): st.markdown(f"- **{row['Matchup']}**: Off by just **{row['abs_err']:.1f} pts**")
+                with colB:
+                    st.error("**⚠️ Top 3 Worst Whiffs (Biggest Misses)**")
+                    worst = macro_games.nlargest(3, 'abs_err')
+                    for _, row in worst.iterrows(): st.markdown(f"- **{row['Matchup']}**: Off by **{row['abs_err']:.1f} pts**")
+            else:
+                st.info("League-wide metrics will populate here once completed game results are processed.")
+                
+        # --- TAB 3: INSIDE THE ALGORITHM (LIVE BRAIN WEIGHTS) ---
+        with tab_brain:
+            st.markdown("**What is the Machine Learning model currently prioritizing?**")
+            st.caption("Every week, the algorithm retrains itself on the newest data. This chart extracts the actual mathematical weights (coefficients) from the AI's Ridge regression brain. As the season progresses, you will literally watch it dynamically shift priority between these variables based on what is actually winning football games.")
+            
+            if os.path.exists("feature_weights.csv"):
+                weights_df = pd.read_csv("feature_weights.csv").set_index("Feature")
+                st.bar_chart(weights_df, color="#9467bd")
+            else:
+                st.info("Live feature weights will be extracted and displayed after your next automated pipeline run.")
+
+    except Exception: pass
