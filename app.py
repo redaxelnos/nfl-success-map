@@ -8,6 +8,7 @@ import nfl_data_py as nfl
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
+from streamlit.components.v1 import html
 from fantasy_pipeline import fetch_complete_fantasy_state
 
 # =====================================================================
@@ -34,6 +35,19 @@ st.markdown(
     "official schedules, stadium facility profiles, exact travel distances, team news vitals, and "
     "interactive simulation sliders."
 )
+
+# =====================================================================
+# VERCEL WEB ANALYTICS
+# =====================================================================
+# Inject Vercel Web Analytics script for tracking visitor data
+# This uses the official Vercel CDN approach for non-JavaScript frameworks
+vercel_analytics_script = """
+<script>
+  window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+</script>
+<script defer src="/_vercel/insights/script.js"></script>
+"""
+html(vercel_analytics_script, height=0)
 
 NFL_ABBR_MAP = {"LA": "LAR", "OAK": "LV", "SD": "LAC", "WSH": "WAS", "STL": "LAR"}
 
