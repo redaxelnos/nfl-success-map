@@ -7,8 +7,29 @@ import folium
 import nfl_data_py as nfl
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 from fantasy_pipeline import fetch_complete_fantasy_state
+
+# =====================================================================
+# VERCEL SPEED INSIGHTS INTEGRATION
+# =====================================================================
+def inject_vercel_speed_insights():
+    """
+    Inject Vercel Speed Insights tracking script.
+    This will only activate when the app is deployed on Vercel.
+    """
+    # Check if running on Vercel (Vercel sets VERCEL environment variable)
+    is_vercel = os.environ.get('VERCEL', '').lower() == '1' or os.environ.get('VERCEL_ENV') is not None
+    
+    if is_vercel:
+        speed_insights_script = """
+        <script>
+          window.si = window.si || function () { (window.siq = window.siq || []).push(arguments); };
+        </script>
+        <script defer src="/_vercel/speed-insights/script.js"></script>
+        """
+        components.html(speed_insights_script, height=0)
 
 # =====================================================================
 # SECURE CLOUD AUTHENTICATION REBUILD
@@ -27,6 +48,9 @@ st.set_page_config(
     page_title=f"NFL Matchup, Travel & Intelligence Hub ({CURRENT_YEAR})", 
     layout="wide"
 )
+
+# Inject Vercel Speed Insights if deployed on Vercel
+inject_vercel_speed_insights()
 
 st.title(f"Official NFL Schedule, Distance Travel & Intelligence Hub ({CURRENT_YEAR})")
 st.markdown(
