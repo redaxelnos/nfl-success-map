@@ -5,3 +5,6 @@ requests
 folium
 streamlit-folium
 yfpy
+plotly
+scikit-learn
+
