@@ -304,7 +304,7 @@ df_teams["adjusted_playoff"] = df_teams.apply(lambda row: calculate_adjusted_pla
 current_adjusted_score = df_teams.loc[df_teams["abbr"] == selected_abbr, "adjusted_playoff"].values[0]
 st.sidebar.markdown(f"### 🎯 Adjusted Playoff Odds: {current_adjusted_score}%")
 
-selected_week = 3  # Updated statically or via user input loop for live week
+selected_week = 3  
 win_prob = 50.0
 is_home = True
 opp_name = "Opponent"
@@ -481,37 +481,16 @@ else:
     st.sidebar.metric(label="Projected Pre-Game Win Likelihood", value=f"{win_prob}%")
     st.sidebar.progress(safe_progress_val(win_prob))
 
+# =====================================================================
+# CARTO MAP REBUILD (REMOVES WATERMARKS)
+# =====================================================================
 st.markdown("---")
-metrics_file = "model_metrics.csv"
-acc, brier, ll = 65.4, 0.215, 0.612
-freshness_label = "Baseline Mock"
-if os.path.exists(metrics_file):
-    try:
-        m_df = pd.read_csv(metrics_file)
-        latest_m = m_df.iloc[-1]
-        acc = round(latest_m['accuracy'] * 100.0, 1)
-        brier = round(latest_m['brier_score'], 3)
-        ll = round(latest_m['log_loss'], 3)
-        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(metrics_file))
-        freshness_label = f"Last Pipeline Run: {mtime.strftime('%b %d, %Y %H:%M UTC')}"
-    except Exception: pass
+st.subheader("Interactive NFL Landscape")
 
-st.subheader(f"📊 Algorithmic Performance (Out-of-Time Backtested)")
-st.caption(f"Pipeline Status: **{freshness_label}**")
+# Custom CARTO API integration to remove watermarks
+carto_url = "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=cb1_4ew2_1_646e85d599c5a7794c05b4ea"
+m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles=carto_url, attr="CARTO")
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Historical Win/Loss Accuracy", f"{acc}%", help="Walk-forward accuracy on strictly unseen historical games.")
-col2.metric("Brier Score", f"{brier}", help="Measures probabilistic accuracy (0.0 is perfect, 0.250 is coin flip).")
-col3.metric("Log Loss", f"{ll}", help="Penalizes extreme misconfidence.")
-
-if 'm_df' in locals() and 'date' in m_df.columns and len(m_df) > 1:
-    tab1, tab2 = st.tabs(["📉 Calibration Over Time (Log Loss & Brier)", "🎯 Accuracy Over Time"])
-    with tab1: st.line_chart(m_df.set_index('date')[['log_loss', 'brier_score']])
-    with tab2:
-        m_df['Accuracy %'] = m_df['accuracy'] * 100.0
-        st.line_chart(m_df.set_index('date')[['Accuracy %']])
-
-m = folium.Map(location=[39.8283, -98.5795], zoom_start=4, tiles="CartoDB positron")
 for _, row in df_teams.iterrows():
     icon = folium.CustomIcon(row["logo_url"], icon_size=(35, 35))
     popup_text = f"<b>{row['team']}</b><br>Playoff Odds: {row.get('adjusted_playoff', 50.0)}%"
@@ -559,7 +538,6 @@ def get_locked_nfl_teams(year, week):
                 for comp in event['competitions'][0]['competitors']:
                     team_abbr = comp['team']['abbreviation'].upper()
                     locked.add(team_abbr)
-                    # Normalize common variations
                     if team_abbr == 'WSH': locked.add('WAS')
                     elif team_abbr == 'LAR': locked.add('LA')
                     elif team_abbr == 'LV': locked.add('OAK')
@@ -606,12 +584,10 @@ def get_algorithmic_projection(player, nfl_team, pos, status, ppg_dict, week, sc
         elites = ["Joe Burrow", "Christian McCaffrey", "Breece Hall", "Derrick Henry", "Amon-Ra St. Brown", "CeeDee Lamb", "Justin Jefferson", "Aaron Jones", "DeVonta Smith", "Tee Higgins", "Trevor Lawrence", "Garrett Wilson"]
         if cleaned_player in elites: val += 7.0
             
-    # Forward-Looking Matchup Variance
     opp_def_rank = get_opponent_def_rank(nfl_team.upper(), week, sched_df, team_data_dict)
     matchup_shift = (opp_def_rank - 16) * 0.15 
     val += matchup_shift
 
-    # Zero out strictly inactive tags. We no longer slash the "Q" tag.
     if status in ["O", "IR", "D", "IR-R", "PUP", "SUSP"]:
         val = 0.0
         
@@ -629,10 +605,8 @@ if not live_roster_df.empty:
     
     league_roster = live_roster_df[live_roster_df["League"] == selected_league].copy()
     
-    # 1. Fetch live lock statuses to protect Thursday/Played players
     locked_nfl_teams = get_locked_nfl_teams(CURRENT_YEAR, selected_week)
     
-    # 2. Inject Matchup-adjusted algorithm projections
     league_roster["Matchup_Proj"] = league_roster.apply(lambda r: get_algorithmic_projection(
         r["Player"], r["NFL_Team"], r["Real_Pos"], r["Health_Status"], 
         real_ppg_data, selected_week, official_schedule, team_dict
@@ -662,7 +636,6 @@ if not live_roster_df.empty:
         st.subheader("Algorithmic Decision Matrix & Directives")
         directives_issued = False
 
-        # --- RULE IDENTIFICATION & IR SCAN ---
         max_ir = league_limits.get("IR", 1)
         ir_occupied_players = league_roster[league_roster["Fantasy_Slot"].isin(["IR", "IR-R"])]["Player"].tolist()
         ir_occupied_count = len(ir_occupied_players)
@@ -685,13 +658,11 @@ if not live_roster_df.empty:
                         f"• **Result:** Unlocks 1 free roster spot for a speculative skill-position stash prior to kickoff."
                     )
 
-        # --- LINEUP OPTIMIZATION (START/SIT) WITH TIME-LOCK ENFORCEMENT ---
         benched_skill = bench[(bench["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])) & (bench["Matchup_Proj"] > 0)]
         starters_skill = starters[starters["Real_Pos"].isin(["QB", "RB", "WR", "TE", "K", "DEF"])]
         
         start_sit_moves = []
         for _, bench_p in benched_skill.iterrows():
-            # If the bench player has already played/locked, ignore them entirely
             if bench_p["NFL_Team"] in locked_nfl_teams:
                 continue
                 
@@ -705,7 +676,6 @@ if not live_roster_df.empty:
             elif bench_p["Real_Pos"] == "DEF": valid_slots = ["DEF"]
             else: valid_slots = []
             
-            # Evaluate against active starters whose games have NOT started yet
             eligible_starters = starters_skill[
                 (starters_skill["Fantasy_Slot"].isin(valid_slots)) & 
                 (~starters_skill["NFL_Team"].isin(locked_nfl_teams))
@@ -738,12 +708,10 @@ if not live_roster_df.empty:
                     )
                     seen_starters.add(move["Starter_Player"])
 
-        # --- INJURY CONTINGENCY DIRECTIVES ---
         injured_starters = starters[starters["Health_Status"].isin(["Q", "D", "O"])]
         if not injured_starters.empty:
             directives_issued = True
             for _, s in injured_starters.iterrows():
-                # Skip locked players (their status won't matter anymore)
                 if s["NFL_Team"] in locked_nfl_teams: continue
                 
                 pos = s["Real_Pos"]
@@ -767,7 +735,6 @@ if not live_roster_df.empty:
                         f"• **In-House Protocol:** Roster holds redundancy via **{backup_name}**. Prepare to swap into starting lineup if game-time scratch occurs."
                     )
 
-        # --- BENCH LIQUIDITY PURGE ---
         kickers_on_bench = bench[bench["Real_Pos"] == "K"]
         defs_on_bench = bench[bench["Real_Pos"] == "DEF"]
         
@@ -787,6 +754,7 @@ if not live_roster_df.empty:
     st.markdown("<br><small>[Fantasy data provided by Yahoo Fantasy](https://football.fantasysports.yahoo.com/)</small>", unsafe_allow_html=True)
 else:
     st.info("Live Yahoo Fantasy Data currently unavailable. Ensure `oauth2.json` or Streamlit Secrets are active.")
+
 # -------------------------------------------------------------------------
 # 9. TRUE MODEL AUDIT: EXPECTATION VS. REALITY & LEAGUE OVERVIEW
 # -------------------------------------------------------------------------
